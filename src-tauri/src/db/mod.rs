@@ -7,6 +7,8 @@ use crate::crypto::load_or_create_key;
 ///
 /// Holds both the open connection and the 32-byte key that was used to
 /// unlock it — so callers never have to pass the key around separately.
+///
+pub mod queries;
 pub struct Db {
     pub conn: Connection,
     pub key: [u8; 32],
