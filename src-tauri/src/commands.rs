@@ -21,10 +21,9 @@ pub struct NetworkStatusDto {
 /// Returned by `get_storage_stats`.
 #[derive(serde::Serialize)]
 pub struct StorageStatsDto {
-    /// Number of payload rows not yet synced to the cloud
-    pub unsynced_count: usize,
-    /// Total number of payload rows in the DB
-    pub total_count: usize,
+    pub total_rows: usize,    // was total_count
+    pub unsynced_rows: usize, // was unsynced_count
+    pub size_kb: u64,
 }
 
 /// Returned by `get_sync_log`.
@@ -65,16 +64,27 @@ pub fn get_storage_stats(state: State<Arc<Mutex<AppState>>>) -> Result<StorageSt
         .expect("AppState lock poisoned in get_storage_stats");
 
     let unsynced = fetch_unsynced(&s.db.conn)?;
-    let unsynced_count = unsynced.len();
+    let unsynced_rows = unsynced.len();
 
-    let total_count: usize =
+    let total_rows: usize =
         s.db.conn
             .query_row("SELECT COUNT(*) FROM payloads", [], |row| row.get(0))
             .map_err(|e| format!("Failed to count payloads: {e}"))?;
 
+    // Get DB file size in KB
+    let size_kb: u64 =
+        s.db.conn
+            .query_row(
+                "SELECT page_count * page_size / 1024 FROM pragma_page_count(), pragma_page_size()",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+
     Ok(StorageStatsDto {
-        unsynced_count,
-        total_count,
+        total_rows,
+        unsynced_rows,
+        size_kb,
     })
 }
 
