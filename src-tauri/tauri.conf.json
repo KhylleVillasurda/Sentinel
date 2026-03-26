@@ -1,0 +1,33 @@
+{
+  "productName": "SENTINEL",
+  "version": "0.1.0",
+  "identifier": "com.sentinel.gateway",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "vite build",
+    "frontendDist":       "../dist",
+    "devUrl":             "http://localhost:1420"
+  },
+  "app": {
+    "windows": [
+      {
+        "title":            "SENTINEL",
+        "width":            1024,
+        "height":           720,
+        "minWidth":         800,
+        "minHeight":        560,
+        "resizable":        true,
+        "fullscreen":       false,
+        "decorations":      true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active":  true,
+    "targets": "all",
+    "icon": []
+  }
+}
