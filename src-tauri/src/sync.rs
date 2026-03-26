@@ -8,8 +8,7 @@ use crate::state::{AppState, NetworkStatus, SyncEvent};
 const SYNC_INTERVAL_SECS: u64 = 10;
 
 /// The cloud endpoint that receives batched payloads.
-/// TODO (Phase 5 / deployment): move this to tauri.conf.json or a config file.
-const CLOUD_ENDPOINT: &str = "https://your-cloud-endpoint.example.com/ingest";
+const CLOUD_ENDPOINT: &str = "http://127.0.0.1:9000/ingest";
 
 /// Starts the sync engine loop.
 ///

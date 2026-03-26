@@ -21,7 +21,7 @@ pub const WS_PORT: u16 = 6767;
 /// This function runs forever and should be spawned with `tokio::spawn` from
 /// `main.rs` during app startup.
 pub async fn start_server(state: Arc<Mutex<AppState>>) {
-    let addr = format!("127.0.0.1:{WS_PORT}");
+    let addr = format!("10.251.58.25:{WS_PORT}");
 
     let listener = TcpListener::bind(&addr)
         .await
