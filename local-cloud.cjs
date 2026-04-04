@@ -38,39 +38,58 @@ const server = http.createServer((req, res) => {
   req.on("data", (chunk) => (body += chunk));
   req.on("end", () => {
     try {
-      const batch = JSON.parse(body);
-      const payloads = batch.payloads ?? [];
+      const bodyData = JSON.parse(body);
+
+      // Smart detection: Handle {"payloads": [...]} OR raw [...]
+      const payloads = Array.isArray(bodyData)
+        ? bodyData
+        : (bodyData.payloads ?? []);
+
       const receivedAt = new Date().toISOString();
 
-      // --- Console log ---
-      console.log("\n─────────────────────────────────────────");
-      console.log(`[cloud] ✓ Batch received at ${receivedAt}`);
-      console.log(`[cloud]   ${payloads.length} payload(s)`);
-      payloads.forEach((p, i) => {
-        console.log(
-          `[cloud]   [${i + 1}] device=${p.device_id} ` +
-            `received_at=${new Date(p.received_at * 1000).toLocaleTimeString()} ` +
-            `blob_len=${p.encrypted_blob?.length ?? 0} chars`,
-        );
-      });
-      console.log("─────────────────────────────────────────");
+      if (payloads.length === 0) {
+        console.log(`[cloud] ⚠ Received empty batch at ${receivedAt}`);
+      } else {
+        console.log("\n─────────────────────────────────────────");
+        console.log(`[cloud] ✓ Batch received at ${receivedAt}`);
+        console.log(`[cloud]   ${payloads.length} payload(s)`);
 
-      // --- Append to JSON file ---
-      const existing = JSON.parse(fs.readFileSync(OUTPUT_FILE, "utf8"));
+        payloads.forEach((p, i) => {
+          console.log(
+            `[cloud]   [${i + 1}] device=${p.device_id || "unknown"} ` +
+              `received_at=${p.received_at ? new Date(p.received_at * 1000).toLocaleTimeString() : "N/A"} ` +
+              `blob_len=${p.encrypted_blob?.length ?? 0} chars`,
+          );
+        });
+        console.log("─────────────────────────────────────────");
+      }
+
+      // Append to JSON file
+      let existing = [];
+      try {
+        const fileContent = fs.readFileSync(OUTPUT_FILE, "utf8").trim();
+        // Only parse if the file isn't empty
+        existing = fileContent ? JSON.parse(fileContent) : [];
+      } catch (e) {
+        console.log("[cloud] ⚠ Resetting corrupted or empty JSON file.");
+        existing = [];
+      }
+
       existing.push({
         received_at: receivedAt,
         payload_count: payloads.length,
         payloads,
       });
+
       fs.writeFileSync(OUTPUT_FILE, JSON.stringify(existing, null, 2));
 
-      // --- Respond 200 so SENTINEL marks rows as synced ---
+      // Respond 200 so Rust marks rows as synced
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true, received: payloads.length }));
     } catch (err) {
       console.error("[cloud] Failed to parse batch:", err.message);
       res.writeHead(400);
-      res.end(JSON.stringify({ error: "Invalid JSON" }));
+      res.end(JSON.stringify({ error: "Invalid JSON structure" }));
     }
   });
 });
