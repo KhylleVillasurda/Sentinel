@@ -7,7 +7,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use sentinel_lib::{commands, db::Db, network, state::AppState, sync, ws};
+use sentinel_lib::{commands, db::Db, network, settings::Settings, state::AppState, sync, ws};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
@@ -25,8 +25,11 @@ fn main() {
             let db =
                 Db::open(&app_data_dir).map_err(|e| format!("Failed to open database: {e}"))?;
 
+            // --- Load persisted settings (falls back to defaults on first run) ---
+            let settings = Settings::load(&app_data_dir);
+
             // --- Initialise shared state ---
-            let app_state = Arc::new(Mutex::new(AppState::new(db)));
+            let app_state = Arc::new(Mutex::new(AppState::new(db, settings)));
             app.manage(app_state.clone());
 
             // --- Spawn background tasks ---
@@ -58,6 +61,8 @@ fn main() {
             commands::get_storage_stats,
             commands::get_connected_devices,
             commands::get_sync_log,
+            commands::get_settings,
+            commands::save_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running sentinel");

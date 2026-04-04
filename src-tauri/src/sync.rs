@@ -1,28 +1,21 @@
-// sync.rs
-// Batch sync engine — drains unsynced rows to the cloud when network is Stable.
-
 use std::sync::{Arc, Mutex};
 use tokio::time::{interval, Duration};
 
 use crate::db::queries::{fetch_unsynced, mark_synced};
 use crate::state::{AppState, NetworkStatus, SyncEvent};
 
+/// How often the sync engine checks for unsynced rows when network is Stable.
 const SYNC_INTERVAL_SECS: u64 = 10;
-
-/// The cloud endpoint that receives batched payloads.
-/// TODO: replace with real cloud URL before deployment.
-const CLOUD_ENDPOINT: &str = "http://127.0.0.1:9000/ingest";
 
 /// Starts the sync engine loop.
 ///
 /// Runs forever — spawn with `tokio::spawn` from `main.rs` at startup.
-///
 /// Every `SYNC_INTERVAL_SECS` seconds:
-///   1. Checks if network is `Stable` — skips if not
+///   1. Checks if network is `Stable` — skips the cycle if not
 ///   2. Fetches all unsynced rows from the DB
-///   3. Posts one batched request to the cloud endpoint
+///   3. Attempts a single batched POST to the cloud endpoint
 ///   4. On success: marks all rows as synced
-///   5. On failure: skips the batch, logs the error, rows retry next cycle
+///   5. On failure: skips the failed batch, logs the error, and continues
 pub async fn start_sync(state: Arc<Mutex<AppState>>) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -34,84 +27,74 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>) {
     loop {
         ticker.tick().await;
 
-        // --- Check network status without cloning the enum ---
-        // Extract a bool so we can drop the lock before any I/O.
-        let is_stable = match state.lock() {
-            Ok(s) => s.network_status == NetworkStatus::Stable,
-            Err(e) => {
-                eprintln!("[sync] AppState lock poisoned: {e}; sync engine shutting down");
-                return;
-            }
+        // --- Copy network status and endpoint — one lock, two values ---
+        // Endpoint is read fresh every cycle so a save_settings call takes
+        // effect on the very next sync without restarting the app.
+        let (network_status, cloud_endpoint) = {
+            let s = state.lock().expect("AppState lock poisoned in sync engine");
+            (s.network_status.clone(), s.settings.cloud_endpoint.clone())
         };
 
-        if !is_stable {
-            continue;
+        if network_status != NetworkStatus::Stable {
+            continue; // Not stable — skip this cycle silently
         }
 
-        // --- Fetch unsynced rows (lock held only for the DB query) ---
-        let rows = match state.lock() {
-            Ok(s) => match fetch_unsynced(&s.db.conn) {
+        // --- Fetch unsynced rows ---
+        let rows = {
+            let s = state.lock().expect("AppState lock poisoned in sync engine");
+            match fetch_unsynced(&s.db.conn) {
                 Ok(r) => r,
                 Err(e) => {
                     log_event(&state, format!("Failed to fetch unsynced rows: {e}"));
                     continue;
                 }
-            },
-            Err(e) => {
-                eprintln!("[sync] AppState lock poisoned: {e}; sync engine shutting down");
-                return;
             }
         };
 
         if rows.is_empty() {
-            continue;
+            continue; // Nothing to sync — skip silently
         }
 
         println!("[sync] Syncing {} row(s) to cloud...", rows.len());
 
-        // --- Build the batch payload (no lock needed) ---
+        // --- Build the batch payload ---
+        // Each row is serialized as a JSON object with its id and base64-encoded blob.
+        // The cloud endpoint receives an array of these objects.
         let batch: Vec<serde_json::Value> = rows
             .iter()
             .map(|row| {
                 serde_json::json!({
-                    "id":             row.id,
-                    "device_id":      row.device_id,
+                    "id": row.id,
+                    "device_id": row.device_id,
                     "encrypted_blob": base64_encode(&row.encrypted_blob),
-                    "received_at":    row.received_at,
+                    "received_at": row.received_at,
                 })
             })
             .collect();
 
-        // --- POST the batch (no lock held during network I/O) ---
+        // --- POST the batch ---
         let post_result = client
-            .post(CLOUD_ENDPOINT)
+            .post(&cloud_endpoint)
             .json(&serde_json::json!({ "payloads": batch }))
             .send()
             .await;
 
         match post_result {
             Ok(response) if response.status().is_success() => {
-                let mut synced_count = 0usize;
+                // --- Mark all rows as synced ---
+                let mut synced_count = 0;
                 let mut failed_ids: Vec<i64> = Vec::new();
 
-                match state.lock() {
-                    Ok(s) => {
-                        for row in &rows {
-                            match mark_synced(&s.db.conn, row.id) {
-                                Ok(()) => synced_count += 1,
-                                Err(e) => {
-                                    eprintln!(
-                                        "[sync] Failed to mark row {} as synced: {e}",
-                                        row.id
-                                    );
-                                    failed_ids.push(row.id);
-                                }
+                {
+                    let s = state.lock().expect("AppState lock poisoned");
+                    for row in &rows {
+                        match mark_synced(&s.db.conn, row.id) {
+                            Ok(_) => synced_count += 1,
+                            Err(e) => {
+                                eprintln!("[sync] Failed to mark row {} as synced: {e}", row.id);
+                                failed_ids.push(row.id);
                             }
                         }
-                    }
-                    Err(e) => {
-                        eprintln!("[sync] AppState lock poisoned after upload: {e}");
-                        return;
                     }
                 }
 
@@ -119,8 +102,9 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>) {
                     format!("Synced {synced_count} row(s) successfully")
                 } else {
                     format!(
-                        "Synced {synced_count} row(s); failed to mark {} row(s): {failed_ids:?}",
-                        failed_ids.len()
+                        "Synced {synced_count} row(s); failed to mark {} row(s): {:?}",
+                        failed_ids.len(),
+                        failed_ids
                     )
                 };
 
@@ -129,9 +113,10 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>) {
             }
 
             Ok(response) => {
+                // Server responded but with an error status — skip and log
+                let status = response.status();
                 let msg = format!(
-                    "Batch upload rejected (HTTP {}); {} row(s) will retry",
-                    response.status(),
+                    "Batch upload rejected by server (HTTP {status}); {} row(s) will retry next cycle",
                     rows.len()
                 );
                 eprintln!("[sync] {msg}");
@@ -139,8 +124,9 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>) {
             }
 
             Err(e) => {
+                // Network error — skip and log, rows stay unsynced for next cycle
                 let msg = format!(
-                    "Batch upload failed: {e}; {} row(s) will retry",
+                    "Batch upload failed: {e}; {} row(s) will retry next cycle",
                     rows.len()
                 );
                 eprintln!("[sync] {msg}");
@@ -152,42 +138,41 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>) {
 
 /// Appends a message to the rolling sync event log in `AppState`.
 ///
-/// Caps the log at 100 entries. Uses VecDeque::pop_front() — O(1) — to drop
-/// the oldest entry when the cap is exceeded (Vec::drain(0..n) was O(n)).
+/// Caps the log at 100 entries — oldest entries are dropped first.
+/// The dashboard reads this log to display recent sync activity.
 fn log_event(state: &Arc<Mutex<AppState>>, message: String) {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let mut s = match state.lock() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[sync] Cannot write to sync log — lock poisoned: {e}");
-            return;
-        }
-    };
-
+    let mut s = state.lock().expect("AppState lock poisoned in log_event");
     s.sync_log.push_back(SyncEvent { message, timestamp });
 
-    // Drop oldest entries beyond the 100-entry cap.
+    // Keep the log bounded — drop oldest entries from the front beyond 100
     while s.sync_log.len() > 100 {
         s.sync_log.pop_front();
     }
 }
 
-/// Encodes bytes as a standard base64 string.
-/// Implemented inline to avoid pulling in an extra crate.
+/// Encodes bytes as a base64 string without pulling in an extra crate.
+/// Uses the standard alphabet (A-Z, a-z, 0-9, +, /).
 fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
 
     for chunk in data.chunks(3) {
         let b0 = chunk[0] as usize;
-        let b1 = chunk.get(1).copied().unwrap_or(0) as usize;
-        let b2 = chunk.get(2).copied().unwrap_or(0) as usize;
+        let b1 = if chunk.len() > 1 {
+            chunk[1] as usize
+        } else {
+            0
+        };
+        let b2 = if chunk.len() > 2 {
+            chunk[2] as usize
+        } else {
+            0
+        };
 
         out.push(ALPHABET[b0 >> 2] as char);
         out.push(ALPHABET[((b0 & 0x3) << 4) | (b1 >> 4)] as char);
@@ -228,8 +213,32 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         let db = Db::open(&dir).expect("Db::open must succeed");
-        let state = Arc::new(Mutex::new(AppState::new(db)));
+        let state = Arc::new(Mutex::new(AppState::new(
+            db,
+            crate::settings::Settings::default(),
+        )));
         (state, dir)
+    }
+
+    #[test]
+    fn endpoint_read_from_settings() {
+        // Verify the sync engine reads cloud_endpoint from state.settings,
+        // not a hardcoded const — changing settings updates the value immediately.
+        let (state, dir) = temp_state();
+
+        {
+            let mut s = state.lock().unwrap();
+            s.settings.cloud_endpoint = "http://10.0.0.5:9000/ingest".to_string();
+        }
+
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.settings.cloud_endpoint, "http://10.0.0.5:9000/ingest",
+            "endpoint must reflect the updated settings value"
+        );
+
+        drop(s);
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -241,7 +250,6 @@ mod tests {
 
         let s = state.lock().unwrap();
         assert_eq!(s.sync_log.len(), 2);
-        // VecDeque supports index access just like Vec
         assert_eq!(s.sync_log[0].message, "first event");
         assert_eq!(s.sync_log[1].message, "second event");
 
@@ -259,7 +267,7 @@ mod tests {
 
         let s = state.lock().unwrap();
         assert_eq!(s.sync_log.len(), 100);
-        // Oldest 20 entries (event 0..=19) must have been dropped
+        // Oldest entries should have been dropped — first entry is now "event 20"
         assert_eq!(s.sync_log[0].message, "event 20");
 
         drop(s);
@@ -273,6 +281,7 @@ mod tests {
 
     #[test]
     fn base64_encode_known_values() {
+        // Standard base64 test vectors (RFC 4648)
         assert_eq!(base64_encode(b"Man"), "TWFu");
         assert_eq!(base64_encode(b"Ma"), "TWE=");
         assert_eq!(base64_encode(b"M"), "TQ==");
@@ -283,15 +292,21 @@ mod tests {
     fn unsynced_rows_remain_after_offline_status() {
         let (state, dir) = temp_state();
 
+        // Insert a row while network is Offline — it should stay unsynced
         {
             let s = state.lock().unwrap();
             insert_payload(&s.db.conn, "device-x", b"blob", 1000).unwrap();
         }
 
+        // Verify it's still unsynced (no sync cycle ran)
         {
             let s = state.lock().unwrap();
             let rows = fetch_unsynced(&s.db.conn).unwrap();
-            assert_eq!(rows.len(), 1, "row must remain unsynced when no sync ran");
+            assert_eq!(
+                rows.len(),
+                1,
+                "row must remain unsynced when network is Offline"
+            );
         }
 
         fs::remove_dir_all(&dir).ok();
