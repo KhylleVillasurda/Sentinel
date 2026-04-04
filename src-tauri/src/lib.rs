@@ -1,7 +1,9 @@
 pub mod commands;
 pub mod crypto;
 pub mod db;
+pub mod error;
 pub mod network;
+pub mod settings;
 pub mod state;
 pub mod sync;
 pub mod ws;

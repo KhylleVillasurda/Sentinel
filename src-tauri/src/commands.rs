@@ -1,32 +1,35 @@
+// commands.rs
+// Tauri invoke() endpoints — the bridge between React and the Rust backend.
+//
+// Working rules (from handoff):
+//   - Commands stay thin: acquire lock → copy what's needed → return DTO
+//   - No logic lives here — all logic is in its respective module
+//   - Lock is held only long enough to copy fields, never across await points
+
 use std::sync::{Arc, Mutex};
 use tauri::State;
 
 use crate::db::queries::fetch_unsynced;
+use crate::error::SentinelError;
 use crate::state::{AppState, NetworkStatus};
 
 // ---------------------------------------------------------------------------
-// DTOs — Data Transfer Objects
+// DTOs
 // ---------------------------------------------------------------------------
-// These are the shapes returned to the React frontend via invoke().
-// They are deliberately simple — no DB types, no internal enums leak out.
-// Serde handles serialization to JSON automatically.
 
-/// Returned by `get_network_status`.
 #[derive(serde::Serialize)]
 pub struct NetworkStatusDto {
     /// One of: "Unknown", "Stable", "Degraded", "Offline"
-    pub status: String,
+    pub status: &'static str,
 }
 
-/// Returned by `get_storage_stats`.
 #[derive(serde::Serialize)]
 pub struct StorageStatsDto {
-    pub total_rows: usize,    // was total_count
-    pub unsynced_rows: usize, // was unsynced_count
+    pub total_rows: usize,
+    pub unsynced_rows: usize,
     pub size_kb: u64,
 }
 
-/// Returned by `get_sync_log`.
 #[derive(serde::Serialize)]
 pub struct SyncEventDto {
     pub message: String,
@@ -36,50 +39,43 @@ pub struct SyncEventDto {
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
-// Rules (from handoff working rules):
-//   - Commands stay thin: read state, return DTO, nothing else
-//   - No logic lives here — all logic lives in its respective module
-//   - State lock is held only long enough to copy what's needed
 
 /// Returns the current network health status.
-///
 /// Called by `useNetworkStatus.js` every 5 seconds.
 #[tauri::command]
-pub fn get_network_status(state: State<Arc<Mutex<AppState>>>) -> NetworkStatusDto {
-    let s = state
-        .lock()
-        .expect("AppState lock poisoned in get_network_status");
-    NetworkStatusDto {
-        status: network_status_to_str(&s.network_status).to_string(),
-    }
+pub fn get_network_status(
+    state: State<Arc<Mutex<AppState>>>,
+) -> Result<NetworkStatusDto, SentinelError> {
+    let s = state.lock()?;
+    Ok(NetworkStatusDto {
+        status: network_status_to_str(&s.network_status),
+    })
 }
 
 /// Returns storage statistics for the dashboard storage bar.
-///
 /// Called by `useStorageStats.js` every 10 seconds.
 #[tauri::command]
-pub fn get_storage_stats(state: State<Arc<Mutex<AppState>>>) -> Result<StorageStatsDto, String> {
-    let s = state
-        .lock()
-        .expect("AppState lock poisoned in get_storage_stats");
+pub fn get_storage_stats(
+    state: State<Arc<Mutex<AppState>>>,
+) -> Result<StorageStatsDto, SentinelError> {
+    let s = state.lock()?;
 
-    let unsynced = fetch_unsynced(&s.db.conn)?;
-    let unsynced_rows = unsynced.len();
+    let unsynced_rows = fetch_unsynced(&s.db.conn)?.len();
 
-    let total_rows: usize =
-        s.db.conn
-            .query_row("SELECT COUNT(*) FROM payloads", [], |row| row.get(0))
-            .map_err(|e| format!("Failed to count payloads: {e}"))?;
+    let total_rows: usize = s
+        .db
+        .conn
+        .query_row("SELECT COUNT(*) FROM payloads", [], |row| row.get(0))?;
 
-    // Get DB file size in KB
-    let size_kb: u64 =
-        s.db.conn
-            .query_row(
-                "SELECT page_count * page_size / 1024 FROM pragma_page_count(), pragma_page_size()",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
+    let size_kb: u64 = s
+        .db
+        .conn
+        .query_row(
+            "SELECT page_count * page_size / 1024 FROM pragma_page_count(), pragma_page_size()",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
 
     Ok(StorageStatsDto {
         total_rows,
@@ -89,41 +85,41 @@ pub fn get_storage_stats(state: State<Arc<Mutex<AppState>>>) -> Result<StorageSt
 }
 
 /// Returns the list of currently connected device IDs.
-///
-/// Called by `DeviceList.jsx` via `useNetworkStatus.js`.
+/// Called by `DeviceList.jsx`.
 #[tauri::command]
-pub fn get_connected_devices(state: State<Arc<Mutex<AppState>>>) -> Vec<String> {
-    let s = state
-        .lock()
-        .expect("AppState lock poisoned in get_connected_devices");
-    s.connected_devices.clone()
+pub fn get_connected_devices(
+    state: State<Arc<Mutex<AppState>>>,
+) -> Result<Vec<String>, SentinelError> {
+    let s = state.lock()?;
+    // connected_devices is now a HashSet — collect into Vec for JSON serialisation.
+    // This avoids cloning the entire Vec<String> that the old version did;
+    // individual String clones are unavoidable since Tauri needs owned data.
+    Ok(s.connected_devices.iter().cloned().collect())
 }
 
-/// Returns the rolling sync event log (most recent 100 entries).
-///
-/// Called by `SyncLog.jsx` to display recent sync activity.
+/// Returns the rolling sync event log (most recent first, up to 100 entries).
+/// Called by `SyncLog.jsx`.
 #[tauri::command]
-pub fn get_sync_log(state: State<Arc<Mutex<AppState>>>) -> Vec<SyncEventDto> {
-    let s = state
-        .lock()
-        .expect("AppState lock poisoned in get_sync_log");
-    s.sync_log
+pub fn get_sync_log(state: State<Arc<Mutex<AppState>>>) -> Result<Vec<SyncEventDto>, SentinelError> {
+    let s = state.lock()?;
+    // sync_log is a VecDeque — .iter().rev() works identically to Vec.
+    Ok(s.sync_log
         .iter()
-        .rev() // most recent first
+        .rev()
         .map(|e| SyncEventDto {
             message: e.message.clone(),
             timestamp: e.timestamp,
         })
-        .collect()
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/// Converts `NetworkStatus` to a stable string for the frontend.
-/// Using a helper keeps the match exhaustive — adding a new variant
-/// causes a compile error here rather than a silent frontend bug.
+/// Converts `NetworkStatus` to a `'static str` for the frontend.
+/// Exhaustive match ensures new variants cause a compile error here,
+/// not a silent frontend bug.
 fn network_status_to_str(status: &NetworkStatus) -> &'static str {
     match status {
         NetworkStatus::Unknown => "Unknown",
@@ -172,7 +168,6 @@ mod tests {
     fn storage_stats_counts_correctly() {
         let (state, dir) = temp_state();
 
-        // Insert 3 rows, mark 1 as synced
         {
             let s = state.lock().unwrap();
             insert_payload(&s.db.conn, "d1", b"blob1", 1000).unwrap();
@@ -183,10 +178,11 @@ mod tests {
 
         let s = state.lock().unwrap();
         let unsynced = fetch_unsynced(&s.db.conn).unwrap();
-        let total: usize =
-            s.db.conn
-                .query_row("SELECT COUNT(*) FROM payloads", [], |row| row.get(0))
-                .unwrap();
+        let total: usize = s
+            .db
+            .conn
+            .query_row("SELECT COUNT(*) FROM payloads", [], |row| row.get(0))
+            .unwrap();
 
         assert_eq!(unsynced.len(), 2, "2 rows should be unsynced");
         assert_eq!(total, 3, "total should be 3");
@@ -201,15 +197,16 @@ mod tests {
 
         {
             let mut s = state.lock().unwrap();
-            s.sync_log.push(SyncEvent {
+            // push_back — VecDeque equivalent of Vec::push
+            s.sync_log.push_back(SyncEvent {
                 message: "oldest".to_string(),
                 timestamp: 1,
             });
-            s.sync_log.push(SyncEvent {
+            s.sync_log.push_back(SyncEvent {
                 message: "middle".to_string(),
                 timestamp: 2,
             });
-            s.sync_log.push(SyncEvent {
+            s.sync_log.push_back(SyncEvent {
                 message: "newest".to_string(),
                 timestamp: 3,
             });
@@ -239,13 +236,14 @@ mod tests {
 
         {
             let mut s = state.lock().unwrap();
-            s.connected_devices.push("sensor-01".to_string());
-            s.connected_devices.push("sensor-02".to_string());
+            // HashSet::insert instead of Vec::push
+            s.connected_devices.insert("sensor-01".to_string());
+            s.connected_devices.insert("sensor-02".to_string());
         }
 
         let s = state.lock().unwrap();
         assert_eq!(s.connected_devices.len(), 2);
-        assert!(s.connected_devices.contains(&"sensor-01".to_string()));
+        assert!(s.connected_devices.contains("sensor-01"));
 
         drop(s);
         fs::remove_dir_all(&dir).ok();

@@ -1,11 +1,21 @@
+// state.rs
+// Shared application state — wrapped in Arc<Mutex<AppState>> everywhere.
+//
+// Design notes:
+//   - sync_log uses VecDeque so oldest entries can be dropped in O(1) with
+//     pop_front() instead of the O(n) drain(0..n) that Vec required.
+//   - connected_devices uses HashSet so insert/remove/contains are all O(1).
+//     Vec gave O(n) contains checks and O(n) removes by value.
+
+use std::collections::{HashSet, VecDeque};
+
 use crate::db::Db;
 
 // ---------------------------------------------------------------------------
-// Phase 3 placeholder — will be moved to network.rs
+// NetworkStatus
 // ---------------------------------------------------------------------------
 
 /// Represents the current internet connection health.
-/// TODO (Phase 3): move this enum into network.rs and re-export from here.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NetworkStatus {
     Unknown,
@@ -15,11 +25,10 @@ pub enum NetworkStatus {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 4 placeholder — will be moved to sync.rs
+// SyncEvent
 // ---------------------------------------------------------------------------
 
 /// A single entry in the rolling sync event log shown on the dashboard.
-/// TODO (Phase 4): move this struct into sync.rs and re-export from here.
 #[derive(Debug, Clone)]
 pub struct SyncEvent {
     pub message: String,
@@ -30,38 +39,49 @@ pub struct SyncEvent {
 // AppState
 // ---------------------------------------------------------------------------
 
-/// Shared application state — wrapped in Arc<Mutex<AppState>> everywhere.
+/// Shared application state — wrapped in `Arc<Mutex<AppState>>` everywhere.
 ///
-/// All fields are pub so Tauri commands can read them directly.
-/// All writes go through the functions in their respective modules.
+/// All fields are `pub` so Tauri commands and background tasks can read them
+/// directly after acquiring the lock. All writes go through the functions in
+/// their respective modules.
 pub struct AppState {
-    /// Encrypted SQLite database handle — all DB access via db::queries
+    /// Encrypted SQLite database handle — all DB access via `db::queries`.
     pub db: Db,
 
-    /// AES-256-GCM key loaded at startup via crypto::load_or_create_key()
+    /// AES-256-GCM key loaded at startup via `crypto::load_or_create_key()`.
     pub encryption_key: [u8; 32],
 
-    /// Current internet health (updated by network::start_monitor, Phase 3)
+    /// Current internet health (updated every 5 s by `network::start_monitor`).
     pub network_status: NetworkStatus,
 
-    /// Device IDs currently connected via WebSocket (Phase 2)
-    pub connected_devices: Vec<String>,
+    /// Device IDs currently connected via WebSocket.
+    ///
+    /// HashSet instead of Vec:
+    ///   - O(1) insert on connect, O(1) remove on disconnect
+    ///   - O(1) contains check (Vec was O(n))
+    ///   - Naturally deduplicates reconnects without extra logic
+    pub connected_devices: HashSet<String>,
 
-    /// Rolling log of recent sync events for the dashboard (Phase 4)
-    pub sync_log: Vec<SyncEvent>,
+    /// Rolling log of recent sync events for the dashboard.
+    ///
+    /// VecDeque instead of Vec:
+    ///   - push_back for new entries: O(1) amortised (same as Vec)
+    ///   - pop_front to drop oldest beyond the 100-entry cap: O(1)
+    ///     (Vec::drain(0..n) was O(n) due to element shifting)
+    pub sync_log: VecDeque<SyncEvent>,
 }
 
 impl AppState {
-    /// Creates a new AppState from an open Db handle.
-    /// The encryption key is read from the Db so it stays in sync.
+    /// Creates a new `AppState` from an open `Db` handle.
+    /// The encryption key is copied from the `Db` so it stays in sync.
     pub fn new(db: Db) -> Self {
         let encryption_key = db.key;
         Self {
             db,
             encryption_key,
             network_status: NetworkStatus::Unknown,
-            connected_devices: Vec::new(),
-            sync_log: Vec::new(),
+            connected_devices: HashSet::new(),
+            sync_log: VecDeque::new(),
         }
     }
 }
