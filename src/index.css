@@ -1,0 +1,29 @@
+:root {
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  
+  /* Backgrounds */
+  --color-background-primary: #1a1a1e;
+  --color-background-secondary: #252529;
+  --color-background-tertiary: #0f0f11;
+
+  /* Text */
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #a1a1aa;
+  --color-text-tertiary: #71717a;
+
+  /* Borders & Accents */
+  --color-border-tertiary: #2d2d32;
+  --color-accent-green: #1d9e75;
+  --color-accent-red: #e24b4a;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--color-background-tertiary);
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  box-sizing: border-box;
+}
