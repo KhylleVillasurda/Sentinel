@@ -37,8 +37,12 @@ log = "0.4"
 tauri-plugin-log = "2"
 thiserror = "1"
 
+keyring = "3.0"
+hex = "0.4.3"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+chrono = "0.4"
 
 [profile.release]
 opt-level = "s" # optimise for binary size on Raspberry Pi
