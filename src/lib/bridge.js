@@ -16,3 +16,6 @@ export const getConnectedDevices = () => invoke("get_connected_devices");
 
 /** @returns {{ message: string, timestamp: number }[]} */
 export const getSyncLog = () => invoke("get_sync_log");
+
+export const getSettings = () => invoke("get_settings");
+export const saveSettings = (settings) => invoke("save_settings", { settings });
