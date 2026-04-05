@@ -3,7 +3,6 @@
 // Responsibilities: build the Tauri app, initialise shared state,
 // spawn background tasks (WS server, network monitor, sync engine),
 // and register all Tauri commands.
-// Nothing else belongs here — keep it as a wiring file only.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -59,6 +58,7 @@ fn main() {
             commands::get_sync_log,
             commands::get_settings,
             commands::save_settings,
+            commands::force_sync,
         ])
         .run(tauri::generate_context!())
         .expect("error while running sentinel");

@@ -1,13 +1,11 @@
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{interval, Duration};
 
 use tauri::{AppHandle, Emitter};
 
 use crate::db::queries::{fetch_unsynced, mark_synced};
 use crate::state::{AppState, NetworkStatus, SyncEvent};
-
-/// How often the sync engine checks for unsynced rows when network is Stable.
-const SYNC_INTERVAL_SECS: u64 = 10;
 
 /// Starts the sync engine loop.
 ///
@@ -18,128 +16,143 @@ const SYNC_INTERVAL_SECS: u64 = 10;
 ///   3. Attempts a single batched POST to the cloud endpoint
 ///   4. On success: marks all rows as synced
 ///   5. On failure: skips the failed batch, logs the error, and continues
-pub async fn start_sync(state: Arc<Mutex<AppState>>, handle: tauri::AppHandle) {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
-        .build()
-        .expect("Failed to build reqwest client for sync engine");
+pub async fn start_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
+    let sync_interval = {
+        let s = state.lock().unwrap();
+        s.config.sync_interval_secs
+    };
 
-    let mut ticker = interval(Duration::from_secs(SYNC_INTERVAL_SECS));
+    let mut ticker = interval(Duration::from_secs(sync_interval));
 
     loop {
         ticker.tick().await;
+        perform_sync(state.clone(), handle.clone()).await;
+    }
+}
 
-        // --- Copy network status and endpoint — one lock, two values ---
-        // Endpoint is read fresh every cycle so a save_settings call takes
-        // effect on the very next sync without restarting the app.
-        let (network_status, cloud_endpoint) = {
-            let s = state.lock().expect("AppState lock poisoned in sync engine");
-            (s.network_status.clone(), s.config.cloud_endpoint.clone())
-        };
+pub async fn perform_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .expect("Failed to build reqwest client");
 
-        if network_status != NetworkStatus::Stable {
-            continue; // Not stable — skip this cycle silently
-        }
+    // 1. Get status and config
+    let (network_status, cloud_endpoint) = {
+        let s = state.lock().expect("AppState lock poisoned");
+        (s.network_status.clone(), s.config.cloud_endpoint.clone())
+    };
 
-        // --- Fetch unsynced rows ---
-        let rows = {
-            let s = state.lock().expect("AppState lock poisoned in sync engine");
-            match fetch_unsynced(&s.db.conn) {
-                Ok(r) => r,
-                Err(e) => {
-                    log_event(
-                        &state,
-                        Some(&handle),
-                        format!("Failed to fetch unsynced rows: {e}"),
-                    );
-                    continue;
-                }
+    // 2. Local Network Check
+    if network_status != NetworkStatus::Stable {
+        return;
+    }
+
+    // 3. Milestone 1: Heartbeat Check (The "Pre-flight")
+    if !is_cloud_healthy(&client, &cloud_endpoint).await {
+        log_event(
+            &state,
+            Some(&handle),
+            "Cloud Offline: /health unreachable".to_string(),
+        );
+        return;
+    }
+
+    // 4. Fetch rows (Your existing logic)
+    let rows = {
+        let s = state.lock().expect("AppState lock poisoned");
+        match fetch_unsynced(&s.db.conn) {
+            Ok(r) => r,
+            Err(e) => {
+                log_event(&state, Some(&handle), format!("Failed to fetch: {e}"));
+                return;
             }
-        };
-
-        if rows.is_empty() {
-            continue; // Nothing to sync — skip silently
         }
+    };
 
-        println!("[sync] Syncing {} row(s) to cloud...", rows.len());
+    if rows.is_empty() {
+        return;
+    }
 
-        // --- Build the batch payload ---
-        // Each row is serialized as a JSON object with its id and base64-encoded blob.
-        // The cloud endpoint receives an array of these objects.
-        let batch: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|row| {
-                serde_json::json!({
-                    "id": row.id,
-                    "device_id": row.device_id,
-                    "encrypted_blob": base64_encode(&row.encrypted_blob),
-                    "received_at": row.received_at,
-                })
+    // 5. Build and POST Batch (Your existing logic)
+    let batch: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|row| {
+            serde_json::json!({
+                "id": row.id,
+                "device_id": row.device_id,
+                "encrypted_blob": base64_encode(&row.encrypted_blob),
+                "received_at": row.received_at,
             })
-            .collect();
+        })
+        .collect();
 
-        // --- POST the batch ---
-        let post_result = client
-            .post(&cloud_endpoint)
-            .json(&serde_json::json!({ "payloads": batch }))
-            .send()
-            .await;
-
-        match post_result {
-            Ok(response) if response.status().is_success() => {
-                // --- Mark all rows as synced ---
-                let mut synced_count = 0;
-                let mut failed_ids: Vec<i64> = Vec::new();
-
-                {
-                    let s = state.lock().expect("AppState lock poisoned");
-                    for row in &rows {
-                        match mark_synced(&s.db.conn, row.id) {
-                            Ok(_) => synced_count += 1,
-                            Err(e) => {
-                                eprintln!("[sync] Failed to mark row {} as synced: {e}", row.id);
-                                failed_ids.push(row.id);
-                            }
-                        }
+    match client
+        .post(&cloud_endpoint)
+        .json(&serde_json::json!({ "payloads": batch }))
+        .send()
+        .await
+    {
+        Ok(res) if res.status().is_success() => {
+            let mut synced_count = 0;
+            {
+                let s = state.lock().expect("AppState lock poisoned");
+                for row in &rows {
+                    if mark_synced(&s.db.conn, row.id).is_ok() {
+                        synced_count += 1;
                     }
                 }
-
-                let msg = if failed_ids.is_empty() {
-                    format!("Synced {synced_count} row(s) successfully")
-                } else {
-                    format!(
-                        "Synced {synced_count} row(s); failed to mark {} row(s): {:?}",
-                        failed_ids.len(),
-                        failed_ids
-                    )
-                };
-
-                println!("[sync] {msg}");
-                log_event(&state, Some(&handle), msg);
             }
-
-            Ok(response) => {
-                // Server responded but with an error status — skip and log
-                let status = response.status();
-                let msg = format!(
-                    "Batch upload rejected by server (HTTP {status}); {} row(s) will retry next cycle",
-                    rows.len()
-                );
-                eprintln!("[sync] {msg}");
-                log_event(&state, Some(&handle), msg);
-            }
-
-            Err(e) => {
-                // Network error — skip and log, rows stay unsynced for next cycle
-                let msg = format!(
-                    "Batch upload failed: {e}; {} row(s) will retry next cycle",
-                    rows.len()
-                );
-                eprintln!("[sync] {msg}");
-                log_event(&state, Some(&handle), msg);
-            }
+            log_event(
+                &state,
+                Some(&handle),
+                format!("Synced {synced_count} row(s) successfully"),
+            );
+        }
+        Ok(res) => {
+            log_event(
+                &state,
+                Some(&handle),
+                format!("Server rejected batch: HTTP {}", res.status()),
+            );
+        }
+        Err(e) => {
+            log_event(&state, Some(&handle), format!("Upload failed: {e}"));
         }
     }
+}
+
+// Pre-flight check
+async fn is_cloud_healthy(client: &reqwest::Client, endpoint: &str) -> bool {
+    let health_url = format!("{}/health", endpoint.trim_end_matches('/'));
+    client
+        .get(health_url)
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await
+        .map(|res| res.status().is_success())
+        .unwrap_or(false)
+}
+
+// Push to React instantly
+pub fn log_and_emit(state: &Arc<Mutex<AppState>>, handle: &AppHandle, message: String) {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let event = SyncEvent {
+        message: message.clone(),
+        timestamp,
+    };
+
+    if let Ok(mut s) = state.lock() {
+        s.sync_log.insert(0, event.clone());
+        if s.sync_log.len() > 100 {
+            s.sync_log.pop();
+        }
+    }
+
+    let _ = handle.emit("new-sync-event", event);
 }
 
 /// Appends a message to the rolling sync event log in `AppState`.
@@ -147,61 +160,31 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>, handle: tauri::AppHandle) {
 /// Caps the log at 100 entries — oldest entries are dropped first.
 /// The dashboard reads this log to display recent sync activity.
 pub fn log_event(state: &Arc<Mutex<AppState>>, handle: Option<&AppHandle>, message: String) {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
     let event = SyncEvent {
         message: message.clone(),
-        timestamp: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64,
+        timestamp,
     };
 
     if let Ok(mut s) = state.lock() {
-        s.sync_log.push(event.clone());
+        s.sync_log.insert(0, event.clone());
         if s.sync_log.len() > 100 {
-            s.sync_log.remove(0);
+            s.sync_log.pop();
         }
     }
 
-    // Only emit if a handle is provided (skips during tests)
     if let Some(h) = handle {
         let _ = h.emit("new-sync-event", event);
     }
 }
 
-/// Encodes bytes as a base64 string without pulling in an extra crate.
-/// Uses the standard alphabet (A-Z, a-z, 0-9, +, /).
 fn base64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
-
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as usize;
-        let b1 = if chunk.len() > 1 {
-            chunk[1] as usize
-        } else {
-            0
-        };
-        let b2 = if chunk.len() > 2 {
-            chunk[2] as usize
-        } else {
-            0
-        };
-
-        out.push(ALPHABET[b0 >> 2] as char);
-        out.push(ALPHABET[((b0 & 0x3) << 4) | (b1 >> 4)] as char);
-        out.push(if chunk.len() > 1 {
-            ALPHABET[((b1 & 0xf) << 2) | (b2 >> 6)] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            ALPHABET[b2 & 0x3f] as char
-        } else {
-            '='
-        });
-    }
-
-    out
+    use base64::{engine::general_purpose, Engine as _};
+    general_purpose::STANDARD.encode(data)
 }
 
 // ---------------------------------------------------------------------------
@@ -257,23 +240,19 @@ mod tests {
 
     #[test]
     fn log_event_appends_to_sync_log() {
-        let (state, dir) = temp_state();
-
+        let (state, _dir) = temp_state();
         log_event(&state, None, "first event".to_string());
         log_event(&state, None, "second event".to_string());
 
         let s = state.lock().unwrap();
-        assert_eq!(s.sync_log.len(), 2);
-        assert_eq!(s.sync_log[0].message, "first event");
-        assert_eq!(s.sync_log[1].message, "second event");
-
-        drop(s);
-        fs::remove_dir_all(&dir).ok();
+        // Since we insert at 0, index 0 is now "second event"
+        assert_eq!(s.sync_log[0].message, "second event");
+        assert_eq!(s.sync_log[1].message, "first event");
     }
 
     #[test]
     fn log_event_caps_at_100_entries() {
-        let (state, dir) = temp_state();
+        let (state, _dir) = temp_state();
 
         for i in 0..120 {
             log_event(&state, None, format!("event {i}"));
@@ -281,11 +260,8 @@ mod tests {
 
         let s = state.lock().unwrap();
         assert_eq!(s.sync_log.len(), 100);
-        // Oldest entries should have been dropped — first entry is now "event 20"
-        assert_eq!(s.sync_log[0].message, "event 20");
-
-        drop(s);
-        fs::remove_dir_all(&dir).ok();
+        // The most recent event (119) should be at the front
+        assert_eq!(s.sync_log[0].message, "event 119");
     }
 
     #[test]

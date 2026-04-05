@@ -211,6 +211,20 @@ pub fn save_config(state: State<Arc<Mutex<AppState>>>, payload: ConfigDto) -> Re
     s.config.save(&s.app_data_dir)
 }
 
+#[tauri::command]
+pub async fn force_sync(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+    handle: tauri::AppHandle,
+) -> Result<(), crate::error::SentinelError> {
+    let state_inner = state.inner().clone();
+    // Run in background so the UI doesn't "hiccup"
+    tauri::async_runtime::spawn(async move {
+        // You'll call your main sync logic function here
+        crate::sync::perform_sync(state_inner, handle).await;
+    });
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

@@ -19,3 +19,4 @@ export const getSyncLog = () => invoke("get_sync_log");
 
 export const getSettings = () => invoke("get_settings");
 export const saveSettings = (settings) => invoke("save_settings", { settings });
+export const forceSync = () => invoke("force_sync");

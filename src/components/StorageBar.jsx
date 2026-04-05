@@ -3,6 +3,7 @@
 // Reads from useStorageStats — no props needed.
 
 import { useStorageStats } from "../hooks/useStorageStats";
+import { forceSync } from "../lib/bridge";
 
 const MAX_DISPLAY_KB = 102400; // treat 100 MB as "full" for the bar
 
@@ -10,13 +11,18 @@ export function StorageBar() {
   const { totalRows, unsyncedRows, sizeKb } = useStorageStats();
 
   const fillPct = Math.min((sizeKb / MAX_DISPLAY_KB) * 100, 100);
-  const sizeLabel = sizeKb >= 1024
-    ? `${(sizeKb / 1024).toFixed(1)} MB`
-    : `${sizeKb} KB`;
+  const sizeLabel =
+    sizeKb >= 1024 ? `${(sizeKb / 1024).toFixed(1)} MB` : `${sizeKb} KB`;
 
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          marginBottom: 6,
+        }}
+      >
         <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
           Local storage
         </span>
@@ -43,23 +49,23 @@ export function StorageBar() {
         />
       </div>
 
-      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          marginTop: 6,
+        }}
+      >
         <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
           {totalRows.toLocaleString()} rows total
         </span>
         {unsyncedRows > 0 && (
-          <span
-            style={{
-              fontSize: 11,
-              fontWeight: 500,
-              padding: "1px 8px",
-              borderRadius: 99,
-              background: "#FAEEDA",
-              color: "#633806",
-            }}
-          >
-            {unsyncedRows.toLocaleString()} pending sync
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={unsyncedBadgeStyle}>{unsyncedRows} unsynced</span>
+            <button onClick={() => forceSync()} style={syncButtonStyle}>
+              Sync Now
+            </button>
+          </div>
         )}
       </div>
     </div>
