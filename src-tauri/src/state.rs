@@ -21,7 +21,7 @@ pub enum NetworkStatus {
 
 /// A single entry in the rolling sync event log shown on the dashboard.
 /// TODO (Phase 4): move this struct into sync.rs and re-export from here.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct SyncEvent {
     pub message: String,
     pub timestamp: i64,

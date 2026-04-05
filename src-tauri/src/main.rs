@@ -14,44 +14,40 @@ use tauri::Manager;
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            // --- Resolve the platform app data directory ---
-            // On Windows: C:\Users\<user>\AppData\Roaming\<app-id>\
-            // On macOS:   ~/Library/Application Support/<app-id>/
-            // On Linux:   ~/.local/share/<app-id>/
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
 
-            // --- Initialise encrypted database ---
-            let db =
-                Db::open(&app_data_dir).map_err(|e| format!("Failed to open database: {e}"))?;
+            let db = Db::open(&app_data_dir).map_err(|e| e.to_string())?;
 
-            // --- Load the config from that path ---
+            // 1. Load the actual config
             let cfg = Config::load(&app_data_dir).expect("Failed to load Sentinel config file");
 
-            // --- Initialise shared state ---
-            let app_state = Arc::new(Mutex::new(AppState::new(db, cfg, app_data_dir.clone())));
+            // 2. Pass 'cfg' (NOT Config::default()) into AppState
+            let app_state = Arc::new(Mutex::new(AppState::new(db, cfg, app_data_dir)));
+
+            // 3. Register state with Tauri
             app.manage(app_state.clone());
 
             // --- Spawn background tasks ---
-            // Each task gets its own Arc clone — they share state safely via Mutex.
-            // tauri::async_runtime::spawn is the correct Tauri 2 equivalent of tokio::spawn.
 
-            // Phase 2: WebSocket ingestion server (ws://localhost:6767)
+            // WebSocket ingestion server
             let ws_state = app_state.clone();
             tauri::async_runtime::spawn(async move {
                 ws::start_server(ws_state).await;
             });
 
-            // Phase 3: Network health monitor (pings every 5s)
+            // Network health monitor
             let net_state = app_state.clone();
             tauri::async_runtime::spawn(async move {
                 network::start_monitor(net_state).await;
             });
 
-            // Phase 4: Sync engine (drains unsynced rows every 10s when Stable)
+            // Sync engine
             let sync_state = app_state.clone();
+            let sync_handle = app.handle().clone();
+
             tauri::async_runtime::spawn(async move {
-                sync::start_sync(sync_state).await;
+                sync::start_sync(sync_state, sync_handle).await;
             });
 
             Ok(())

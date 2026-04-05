@@ -1,6 +1,8 @@
 use std::sync::{Arc, Mutex};
 use tokio::time::{interval, Duration};
 
+use tauri::{AppHandle, Emitter};
+
 use crate::db::queries::{fetch_unsynced, mark_synced};
 use crate::state::{AppState, NetworkStatus, SyncEvent};
 
@@ -16,7 +18,7 @@ const SYNC_INTERVAL_SECS: u64 = 10;
 ///   3. Attempts a single batched POST to the cloud endpoint
 ///   4. On success: marks all rows as synced
 ///   5. On failure: skips the failed batch, logs the error, and continues
-pub async fn start_sync(state: Arc<Mutex<AppState>>) {
+pub async fn start_sync(state: Arc<Mutex<AppState>>, handle: tauri::AppHandle) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
@@ -45,7 +47,11 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>) {
             match fetch_unsynced(&s.db.conn) {
                 Ok(r) => r,
                 Err(e) => {
-                    log_event(&state, format!("Failed to fetch unsynced rows: {e}"));
+                    log_event(
+                        &state,
+                        Some(&handle),
+                        format!("Failed to fetch unsynced rows: {e}"),
+                    );
                     continue;
                 }
             }
@@ -109,7 +115,7 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>) {
                 };
 
                 println!("[sync] {msg}");
-                log_event(&state, msg);
+                log_event(&state, Some(&handle), msg);
             }
 
             Ok(response) => {
@@ -120,7 +126,7 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>) {
                     rows.len()
                 );
                 eprintln!("[sync] {msg}");
-                log_event(&state, msg);
+                log_event(&state, Some(&handle), msg);
             }
 
             Err(e) => {
@@ -130,7 +136,7 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>) {
                     rows.len()
                 );
                 eprintln!("[sync] {msg}");
-                log_event(&state, msg);
+                log_event(&state, Some(&handle), msg);
             }
         }
     }
@@ -140,20 +146,25 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>) {
 ///
 /// Caps the log at 100 entries — oldest entries are dropped first.
 /// The dashboard reads this log to display recent sync activity.
-fn log_event(state: &Arc<Mutex<AppState>>, message: String) {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+pub fn log_event(state: &Arc<Mutex<AppState>>, handle: Option<&AppHandle>, message: String) {
+    let event = SyncEvent {
+        message: message.clone(),
+        timestamp: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64,
+    };
 
-    let mut s = state.lock().expect("AppState lock poisoned in log_event");
+    if let Ok(mut s) = state.lock() {
+        s.sync_log.push(event.clone());
+        if s.sync_log.len() > 100 {
+            s.sync_log.remove(0);
+        }
+    }
 
-    // THIS is the line that uses the import and the variables!
-    s.sync_log.push(SyncEvent { message, timestamp });
-
-    // Keep the log bounded — drop oldest entries from the front
-    while s.sync_log.len() > 100 {
-        s.sync_log.remove(0);
+    // Only emit if a handle is provided (skips during tests)
+    if let Some(h) = handle {
+        let _ = h.emit("new-sync-event", event);
     }
 }
 
@@ -248,8 +259,8 @@ mod tests {
     fn log_event_appends_to_sync_log() {
         let (state, dir) = temp_state();
 
-        log_event(&state, "first event".to_string());
-        log_event(&state, "second event".to_string());
+        log_event(&state, None, "first event".to_string());
+        log_event(&state, None, "second event".to_string());
 
         let s = state.lock().unwrap();
         assert_eq!(s.sync_log.len(), 2);
@@ -265,7 +276,7 @@ mod tests {
         let (state, dir) = temp_state();
 
         for i in 0..120 {
-            log_event(&state, format!("event {i}"));
+            log_event(&state, None, format!("event {i}"));
         }
 
         let s = state.lock().unwrap();
