@@ -2,7 +2,8 @@
 // Root layout. Composes all dashboard components into one view.
 // No data fetching here — each component owns its own polling via hooks.
 // Add new sections here as phases complete.
-
+import { useState } from "react"; // Add useState
+import { SettingsModal } from "./components/SettingsModal";
 import { StatusBadge } from "./components/StatusBadge";
 import { StorageBar } from "./components/StorageBar";
 import { DeviceList } from "./components/DeviceList";
@@ -25,6 +26,8 @@ const label = {
 };
 
 export default function App() {
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
   return (
     <div
       style={{
@@ -46,10 +49,31 @@ export default function App() {
       >
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 500, margin: 0 }}>SENTINEL</h1>
-          <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: "2px 0 0" }}>
+          <p
+            style={{
+              fontSize: 13,
+              color: "var(--color-text-secondary)",
+              margin: "2px 0 0",
+            }}
+          >
             Local-first IoT edge gateway
           </p>
         </div>
+        {/* Settings Button */}
+        <button
+          onClick={() => setIsSettingsOpen(true)}
+          style={{
+            background: "none",
+            border: "1px solid var(--color-border-tertiary)",
+            color: "var(--color-text-secondary)",
+            borderRadius: 6,
+            padding: "4px 8px",
+            cursor: "pointer",
+            fontSize: 12,
+          }}
+        >
+          Settings
+        </button>
         <StatusBadge />
       </div>
 
@@ -78,6 +102,10 @@ export default function App() {
         <p style={label}>Sync log</p>
         <SyncLog />
       </div>
+      <SettingsModal
+        isOpen={isSettingsOpen}
+        onClose={() => setIsSettingsOpen(false)}
+      />
     </div>
   );
 }

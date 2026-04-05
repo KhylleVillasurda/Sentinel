@@ -61,6 +61,8 @@ fn main() {
             commands::get_storage_stats,
             commands::get_connected_devices,
             commands::get_sync_log,
+            commands::get_settings,
+            commands::save_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running sentinel");

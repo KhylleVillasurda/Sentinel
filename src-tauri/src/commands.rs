@@ -3,6 +3,7 @@ use tauri::State;
 
 use crate::config::Config;
 use crate::db::queries::fetch_unsynced;
+use crate::error::SentinelError;
 use crate::state::{AppState, NetworkStatus};
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,34 @@ pub fn get_sync_log(state: State<Arc<Mutex<AppState>>>) -> Vec<SyncEventDto> {
             timestamp: e.timestamp,
         })
         .collect()
+}
+
+#[tauri::command]
+pub fn get_settings(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+) -> Result<Config, SentinelError> {
+    let s = state
+        .lock()
+        .map_err(|_| SentinelError::LockPoisoned("State".to_string()))?;
+    Ok(s.config.clone())
+}
+
+#[tauri::command]
+pub fn save_settings(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+    settings: Config, // The frontend sends the whole object
+) -> Result<(), SentinelError> {
+    let mut s = state
+        .lock()
+        .map_err(|_| SentinelError::LockPoisoned("State".to_string()))?;
+
+    //  Update the in-memory state
+    s.config = settings;
+
+    //  Persist to disk so it survives a restart
+    s.config.save(&s.app_data_dir)?;
+
+    Ok(())
 }
 
 /// Returns the current application configuration.
