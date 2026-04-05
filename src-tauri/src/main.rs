@@ -6,7 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use sentinel_lib::{commands, config::Config, db::Db, network, state::AppState, sync, ws};
+use sentinel_lib::{commands, network, state::AppState, sync, ws};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
@@ -16,17 +16,12 @@ fn main() {
             let app_data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&app_data_dir)?;
 
-            let db = Db::open(&app_data_dir).map_err(|e| e.to_string())?;
+            let db = sentinel_lib::db::Db::open(&app_data_dir)?;
 
-            // 1. Load the actual config
-            let cfg = Config::load(&app_data_dir).expect("Failed to load Sentinel config file");
+            let cfg = sentinel_lib::config::Config::load(&app_data_dir)
+                .expect("Failed to load Sentinel config");
 
-            // 2. Pass 'cfg' (NOT Config::default()) into AppState
             let app_state = Arc::new(Mutex::new(AppState::new(db, cfg, app_data_dir)));
-
-            // 3. Register state with Tauri
-            app.manage(app_state.clone());
-
             // --- Spawn background tasks ---
 
             // WebSocket ingestion server
@@ -49,6 +44,7 @@ fn main() {
                 sync::start_sync(sync_state, sync_handle).await;
             });
 
+            app.manage(app_state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

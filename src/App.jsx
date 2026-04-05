@@ -59,22 +59,34 @@ export default function App() {
             Local-first IoT edge gateway
           </p>
         </div>
-        {/* Settings Button */}
-        <button
-          onClick={() => setIsSettingsOpen(true)}
-          style={{
-            background: "none",
-            border: "1px solid var(--color-border-tertiary)",
-            color: "var(--color-text-secondary)",
-            borderRadius: 6,
-            padding: "4px 8px",
-            cursor: "pointer",
-            fontSize: 12,
-          }}
-        >
-          Settings
-        </button>
-        <StatusBadge />
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          {/* Clean up the button style to match the dashboard */}
+          <button
+            onClick={() => setIsSettingsOpen(true)}
+            style={{
+              background: "none",
+              border: "1px solid var(--color-border-tertiary)",
+              color: "var(--color-text-secondary)",
+              borderRadius: 6,
+              padding: "4px 10px", // added subtle padding
+              cursor: "pointer",
+              fontSize: 12,
+              transition: "all 0.2s", // added subtle hover transition
+            }}
+            onMouseOver={(e) =>
+              (e.currentTarget.style.borderColor =
+                "var(--color-text-secondary)")
+            }
+            onMouseOut={(e) =>
+              (e.currentTarget.style.borderColor =
+                "var(--color-border-tertiary)")
+            }
+          >
+            Settings
+          </button>
+          <StatusBadge />
+        </div>
       </div>
 
       {/* Top row — storage + devices */}

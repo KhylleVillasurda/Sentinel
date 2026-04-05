@@ -141,18 +141,27 @@ pub fn get_settings(
 }
 
 #[tauri::command]
-pub fn save_settings(
-    state: tauri::State<'_, Arc<Mutex<AppState>>>,
-    settings: Config, // The frontend sends the whole object
+pub async fn save_settings(
+    state: State<'_, Arc<Mutex<AppState>>>,
+    settings: ConfigDto, // Your DTO from the checklist
 ) -> Result<(), SentinelError> {
     let mut s = state
         .lock()
-        .map_err(|_| SentinelError::LockPoisoned("State".to_string()))?;
+        .map_err(|e| SentinelError::LockPoisoned(e.to_string()))?;
 
-    //  Update the in-memory state
-    s.config = settings;
+    // Tech-user validation
+    if settings.ws_port == 0 {
+        return Err(SentinelError::Other(
+            "Port 0 is reserved by the OS. Please choose a port between 1024-65535.".into(),
+        ));
+    }
 
-    //  Persist to disk so it survives a restart
+    // Update the live config
+    s.config.cloud_endpoint = settings.cloud_endpoint;
+    s.config.ws_port = settings.ws_port;
+    s.config.ws_host = settings.ws_host;
+
+    // Persist to disk immediately
     s.config.save(&s.app_data_dir)?;
 
     Ok(())
