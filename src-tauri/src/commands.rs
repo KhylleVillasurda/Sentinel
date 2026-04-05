@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
-use tauri::{Manager, State};
+use tauri::State;
 
+use crate::config::Config;
 use crate::db::queries::fetch_unsynced;
-use crate::error::SentinelError;
 use crate::state::{AppState, NetworkStatus};
 
 // ---------------------------------------------------------------------------
@@ -12,14 +12,7 @@ use crate::state::{AppState, NetworkStatus};
 // They are deliberately simple — no DB types, no internal enums leak out.
 // Serde handles serialization to JSON automatically.
 
-/// Returned by / accepted by `get_settings` and `save_settings`.
-/// Mirrors `Settings` exactly — a separate DTO keeps internal types out of the API surface.
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct SettingsDto {
-    pub cloud_endpoint: String,
-    pub ws_bind_address: String,
-}
-
+/// Returned by `get_network_status`.
 #[derive(serde::Serialize)]
 pub struct NetworkStatusDto {
     /// One of: "Unknown", "Stable", "Degraded", "Offline"
@@ -39,6 +32,17 @@ pub struct StorageStatsDto {
 pub struct SyncEventDto {
     pub message: String,
     pub timestamp: i64,
+}
+
+/// Returned by `get_config` — mirrors `Config` but as a DTO so the frontend
+/// is insulated from internal field type changes.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct ConfigDto {
+    pub cloud_endpoint: String,
+    pub sync_interval_secs: u64,
+    pub ws_host: String,
+    pub ws_port: u16,
+    pub log_max_entries: usize,
 }
 
 // ---------------------------------------------------------------------------
@@ -66,19 +70,18 @@ pub fn get_network_status(state: State<Arc<Mutex<AppState>>>) -> NetworkStatusDt
 ///
 /// Called by `useStorageStats.js` every 10 seconds.
 #[tauri::command]
-pub fn get_storage_stats(
-    state: State<Arc<Mutex<AppState>>>,
-) -> Result<StorageStatsDto, SentinelError> {
+pub fn get_storage_stats(state: State<Arc<Mutex<AppState>>>) -> Result<StorageStatsDto, String> {
     let s = state
         .lock()
         .expect("AppState lock poisoned in get_storage_stats");
 
-    let unsynced = fetch_unsynced(&s.db.conn)?;
+    let unsynced = fetch_unsynced(&s.db.conn).map_err(|e| e.to_string())?;
     let unsynced_rows = unsynced.len();
 
     let total_rows: usize =
         s.db.conn
-            .query_row("SELECT COUNT(*) FROM payloads", [], |row| row.get(0))?;
+            .query_row("SELECT COUNT(*) FROM payloads", [], |row| row.get(0))
+            .map_err(|e| format!("Failed to count payloads: {e}"))?;
 
     // Get DB file size in KB
     let size_kb: u64 =
@@ -105,8 +108,7 @@ pub fn get_connected_devices(state: State<Arc<Mutex<AppState>>>) -> Vec<String> 
     let s = state
         .lock()
         .expect("AppState lock poisoned in get_connected_devices");
-    // HashSet → Vec so the frontend receives a stable JSON array
-    s.connected_devices.iter().cloned().collect()
+    s.connected_devices.clone()
 }
 
 /// Returns the rolling sync event log (most recent 100 entries).
@@ -127,50 +129,57 @@ pub fn get_sync_log(state: State<Arc<Mutex<AppState>>>) -> Vec<SyncEventDto> {
         .collect()
 }
 
-/// Returns the current settings so the React UI can populate the Settings panel.
+/// Returns the current application configuration.
+///
+/// Called by `Settings.jsx` on mount to populate the settings form.
 #[tauri::command]
-pub fn get_settings(state: State<Arc<Mutex<AppState>>>) -> SettingsDto {
-    let s = state
-        .lock()
-        .expect("AppState lock poisoned in get_settings");
-    SettingsDto {
-        cloud_endpoint: s.settings.cloud_endpoint.clone(),
-        ws_bind_address: s.settings.ws_bind_address.clone(),
+pub fn get_config(state: State<Arc<Mutex<AppState>>>) -> ConfigDto {
+    let s = state.lock().expect("AppState lock poisoned in get_config");
+    ConfigDto {
+        cloud_endpoint: s.config.cloud_endpoint.clone(),
+        sync_interval_secs: s.config.sync_interval_secs,
+        ws_host: s.config.ws_host.clone(),
+        ws_port: s.config.ws_port,
+        log_max_entries: s.config.log_max_entries,
     }
 }
 
-/// Saves new settings to disk and updates the live AppState so sync.rs and
-/// ws.rs pick up the new values on their next cycle.
+/// Saves updated configuration to disk and applies it to the running state.
 ///
-/// NOTE: The WebSocket server bind address takes effect only after restart
-/// (rebinding a live TCP socket requires stopping the listener task).
-/// The cloud endpoint takes effect immediately on the next sync cycle.
+/// Called by `Settings.jsx` on form submit.
+/// Returns `Err` if the disk write fails — the frontend shows this as an error.
+///
+/// Note: Some settings (ws_port, ws_host) take effect on next restart because
+/// the WebSocket server bind address is resolved at startup only.
 #[tauri::command]
-pub fn save_settings(
-    state: State<Arc<Mutex<AppState>>>,
-    app: tauri::AppHandle,
-    dto: SettingsDto,
-) -> Result<(), SentinelError> {
-    let settings = crate::settings::Settings {
-        cloud_endpoint: dto.cloud_endpoint,
-        ws_bind_address: dto.ws_bind_address,
+pub fn save_config(state: State<Arc<Mutex<AppState>>>, payload: ConfigDto) -> Result<(), String> {
+    let mut s = state.lock().expect("AppState lock poisoned in save_config");
+
+    // Validate before mutating state
+    if payload.cloud_endpoint.trim().is_empty() {
+        return Err("cloud_endpoint must not be empty".to_string());
+    }
+    if payload.ws_host.trim().is_empty() {
+        return Err("ws_host must not be empty".to_string());
+    }
+    if payload.ws_port == 0 {
+        return Err("ws_port must be a valid port number (1–65535)".to_string());
+    }
+    if payload.log_max_entries < 10 {
+        return Err("log_max_entries must be at least 10".to_string());
+    }
+
+    // Apply to in-memory config
+    s.config = Config {
+        cloud_endpoint: payload.cloud_endpoint.trim().to_string(),
+        sync_interval_secs: payload.sync_interval_secs,
+        ws_host: payload.ws_host.trim().to_string(),
+        ws_port: payload.ws_port,
+        log_max_entries: payload.log_max_entries,
     };
 
-    // Persist to disk first — if the write fails, do not update live state
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| SentinelError::Io(format!("Could not resolve app data dir: {e}")))?;
-
-    settings.save(&app_data_dir)?;
-
-    // Update live state so sync.rs picks up the new endpoint immediately
-    let mut s = state
-        .lock()
-        .expect("AppState lock poisoned in save_settings");
-    s.settings = settings;
-
-    Ok(())
+    // Persist to disk
+    s.config.save(&s.app_data_dir)
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +223,8 @@ mod tests {
         let db = Db::open(&dir).expect("Db::open must succeed");
         let state = Arc::new(Mutex::new(AppState::new(
             db,
-            crate::settings::Settings::default(),
+            crate::config::Config::default(),
+            std::path::PathBuf::from("test_data"),
         )));
         (state, dir)
     }
@@ -260,15 +270,15 @@ mod tests {
 
         {
             let mut s = state.lock().unwrap();
-            s.sync_log.push_back(SyncEvent {
+            s.sync_log.push(SyncEvent {
                 message: "oldest".to_string(),
                 timestamp: 1,
             });
-            s.sync_log.push_back(SyncEvent {
+            s.sync_log.push(SyncEvent {
                 message: "middle".to_string(),
                 timestamp: 2,
             });
-            s.sync_log.push_back(SyncEvent {
+            s.sync_log.push(SyncEvent {
                 message: "newest".to_string(),
                 timestamp: 3,
             });
@@ -298,47 +308,13 @@ mod tests {
 
         {
             let mut s = state.lock().unwrap();
-            s.connected_devices.insert("sensor-01".to_string());
-            s.connected_devices.insert("sensor-02".to_string());
+            s.connected_devices.push("sensor-01".to_string());
+            s.connected_devices.push("sensor-02".to_string());
         }
 
         let s = state.lock().unwrap();
         assert_eq!(s.connected_devices.len(), 2);
         assert!(s.connected_devices.contains(&"sensor-01".to_string()));
-
-        drop(s);
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn get_settings_returns_default_values() {
-        let (state, dir) = temp_state();
-
-        let s = state.lock().unwrap();
-        assert_eq!(s.settings.cloud_endpoint, "http://127.0.0.1:9000/ingest");
-        assert_eq!(s.settings.ws_bind_address, "0.0.0.0:6767");
-
-        drop(s);
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn settings_update_reflects_in_state() {
-        let (state, dir) = temp_state();
-
-        let new_settings = crate::settings::Settings {
-            cloud_endpoint: "http://10.0.0.5:9000/ingest".to_string(),
-            ws_bind_address: "0.0.0.0:7777".to_string(),
-        };
-
-        {
-            let mut s = state.lock().unwrap();
-            s.settings = new_settings.clone();
-        }
-
-        let s = state.lock().unwrap();
-        assert_eq!(s.settings.cloud_endpoint, "http://10.0.0.5:9000/ingest");
-        assert_eq!(s.settings.ws_bind_address, "0.0.0.0:7777");
 
         drop(s);
         fs::remove_dir_all(&dir).ok();

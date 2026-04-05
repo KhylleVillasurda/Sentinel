@@ -1,13 +1,12 @@
-use std::collections::HashSet;
-use std::collections::VecDeque;
-
+use crate::config::Config;
 use crate::db::Db;
-use crate::settings::Settings;
 
 // ---------------------------------------------------------------------------
-// NetworkStatus
+// Phase 3 placeholder — will be moved to network.rs
 // ---------------------------------------------------------------------------
 
+/// Represents the current internet connection health.
+/// TODO (Phase 3): move this enum into network.rs and re-export from here.
 #[derive(Debug, Clone, PartialEq)]
 pub enum NetworkStatus {
     Unknown,
@@ -17,9 +16,11 @@ pub enum NetworkStatus {
 }
 
 // ---------------------------------------------------------------------------
-// SyncEvent
+// Phase 4 placeholder — will be moved to sync.rs
 // ---------------------------------------------------------------------------
 
+/// A single entry in the rolling sync event log shown on the dashboard.
+/// TODO (Phase 4): move this struct into sync.rs and re-export from here.
 #[derive(Debug, Clone)]
 pub struct SyncEvent {
     pub message: String,
@@ -41,34 +42,34 @@ pub struct AppState {
     /// AES-256-GCM key loaded at startup via crypto::load_or_create_key()
     pub encryption_key: [u8; 32],
 
-    /// Current internet health (updated by network::start_monitor)
+    /// Current internet health (updated by network::start_monitor, Phase 3)
     pub network_status: NetworkStatus,
 
-    /// Device IDs currently connected via WebSocket.
-    /// HashSet prevents duplicates if a device reconnects before cleanup.
-    /// Updated live by ws.rs on connect/disconnect.
-    pub connected_devices: HashSet<String>,
+    /// Device IDs currently connected via WebSocket (Phase 2)
+    pub connected_devices: Vec<String>,
 
-    /// Rolling log of recent sync events for the dashboard.
-    /// VecDeque gives O(1) front-removal when capping at 100 entries.
-    pub sync_log: VecDeque<SyncEvent>,
+    /// Rolling log of recent sync events for the dashboard (Phase 4)
+    pub sync_log: Vec<SyncEvent>,
 
-    /// User-configurable settings (cloud endpoint, WS bind address).
-    /// Loaded from settings.json at startup; persisted on save_settings command.
-    pub settings: Settings,
+    /// User-tunable settings — loaded at startup, mutated via save_config command
+    pub config: Config,
+
+    /// App data directory path — needed by save_config to persist changes
+    pub app_data_dir: std::path::PathBuf,
 }
 
 impl AppState {
-    /// Creates a new AppState from an open Db handle and loaded settings.
-    pub fn new(db: Db, settings: Settings) -> Self {
+    /// Creates a new AppState from an open Db handle, loaded config, and data directory.
+    pub fn new(db: Db, config: Config, app_data_dir: std::path::PathBuf) -> Self {
         let encryption_key = db.key;
         Self {
             db,
             encryption_key,
             network_status: NetworkStatus::Unknown,
-            connected_devices: HashSet::new(),
-            sync_log: VecDeque::new(),
-            settings,
+            connected_devices: Vec::new(),
+            sync_log: Vec::new(),
+            config,
+            app_data_dir,
         }
     }
 }

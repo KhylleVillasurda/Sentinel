@@ -32,7 +32,7 @@ pub async fn start_sync(state: Arc<Mutex<AppState>>) {
         // effect on the very next sync without restarting the app.
         let (network_status, cloud_endpoint) = {
             let s = state.lock().expect("AppState lock poisoned in sync engine");
-            (s.network_status.clone(), s.settings.cloud_endpoint.clone())
+            (s.network_status.clone(), s.config.cloud_endpoint.clone())
         };
 
         if network_status != NetworkStatus::Stable {
@@ -147,11 +147,13 @@ fn log_event(state: &Arc<Mutex<AppState>>, message: String) {
         .unwrap_or(0);
 
     let mut s = state.lock().expect("AppState lock poisoned in log_event");
-    s.sync_log.push_back(SyncEvent { message, timestamp });
 
-    // Keep the log bounded — drop oldest entries from the front beyond 100
+    // THIS is the line that uses the import and the variables!
+    s.sync_log.push(SyncEvent { message, timestamp });
+
+    // Keep the log bounded — drop oldest entries from the front
     while s.sync_log.len() > 100 {
-        s.sync_log.pop_front();
+        s.sync_log.remove(0);
     }
 }
 
@@ -215,7 +217,8 @@ mod tests {
         let db = Db::open(&dir).expect("Db::open must succeed");
         let state = Arc::new(Mutex::new(AppState::new(
             db,
-            crate::settings::Settings::default(),
+            crate::config::Config::default(),
+            std::path::PathBuf::from("./test_data"),
         )));
         (state, dir)
     }
@@ -228,12 +231,12 @@ mod tests {
 
         {
             let mut s = state.lock().unwrap();
-            s.settings.cloud_endpoint = "http://10.0.0.5:9000/ingest".to_string();
+            s.config.cloud_endpoint = "http://10.0.0.5:9000/ingest".to_string();
         }
 
         let s = state.lock().unwrap();
         assert_eq!(
-            s.settings.cloud_endpoint, "http://10.0.0.5:9000/ingest",
+            s.config.cloud_endpoint, "http://10.0.0.5:9000/ingest",
             "endpoint must reflect the updated settings value"
         );
 

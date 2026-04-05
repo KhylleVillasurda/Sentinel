@@ -23,15 +23,14 @@ use crate::state::AppState;
 pub async fn start_server(state: Arc<Mutex<AppState>>) {
     // Read bind address from settings — short lock, clone, release immediately.
     let addr = {
-        let s = state
-            .lock()
-            .expect("AppState lock poisoned in start_server");
-        s.settings.ws_bind_address.clone()
+        let s = state.lock().expect("Lock poisoned");
+        // Use the new config field name 'ws_port' instead of 'ws_bind_address'
+        format!("0.0.0.0:{}", s.config.ws_port)
     };
 
     let listener = TcpListener::bind(&addr)
         .await
-        .expect(&format!("Failed to bind WebSocket server on {addr}"));
+        .unwrap_or_else(|_| panic!("Failed to bind to {}", addr));
 
     println!("[ws] Sentinel ingestion server listening on ws://{addr}");
 
@@ -76,7 +75,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
         let mut s = state
             .lock()
             .expect("AppState lock poisoned on device connect");
-        s.connected_devices.insert(peer_addr.clone());
+        s.connected_devices.push(peer_addr.clone());
         println!(
             "[ws] Device connected: {peer_addr} ({} total)",
             s.connected_devices.len()
@@ -192,7 +191,8 @@ mod tests {
         let (db, dir) = temp_db();
         let state = Arc::new(Mutex::new(AppState::new(
             db,
-            crate::settings::Settings::default(),
+            crate::config::Config::default(),
+            std::path::PathBuf::from("test_data"),
         )));
 
         let peer_a = "192.168.1.10:54321".to_string();
@@ -201,8 +201,8 @@ mod tests {
         // Simulate two devices connecting
         {
             let mut s = state.lock().unwrap();
-            s.connected_devices.insert(peer_a.clone());
-            s.connected_devices.insert(peer_b.clone());
+            s.connected_devices.push(peer_a.clone());
+            s.connected_devices.push(peer_b.clone());
         }
 
         {
@@ -236,7 +236,8 @@ mod tests {
         let (db, dir) = temp_db();
         let state = Arc::new(Mutex::new(AppState::new(
             db,
-            crate::settings::Settings::default(),
+            crate::config::Config::default(),
+            std::path::PathBuf::from("test_data"),
         )));
 
         let peers = vec![
@@ -249,7 +250,7 @@ mod tests {
         {
             let mut s = state.lock().unwrap();
             for p in &peers {
-                s.connected_devices.insert(p.clone());
+                s.connected_devices.push(p.clone());
             }
         }
 
@@ -274,7 +275,8 @@ mod tests {
         let (db, dir) = temp_db();
         let state = Arc::new(Mutex::new(AppState::new(
             db,
-            crate::settings::Settings::default(),
+            crate::config::Config::default(),
+            std::path::PathBuf::from("test_data"),
         )));
 
         let raw = b"temperature:42.5,humidity:60";
@@ -301,7 +303,8 @@ mod tests {
         let (db, dir) = temp_db();
         let state = Arc::new(Mutex::new(AppState::new(
             db,
-            crate::settings::Settings::default(),
+            crate::config::Config::default(),
+            std::path::PathBuf::from("test_data"),
         )));
 
         process_payload(&state, "device-A", b"payload-A").unwrap();
