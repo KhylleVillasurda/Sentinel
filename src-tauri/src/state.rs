@@ -1,6 +1,7 @@
 use crate::config::Config;
 use crate::db::Db;
-use crate::logging::{LogManager, LogEvent};
+use crate::logging::LogManager;
+use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
 // Phase 3 placeholder — will be moved to network.rs
@@ -14,18 +15,6 @@ pub enum NetworkStatus {
     Stable,
     Degraded,
     Offline,
-}
-
-// ---------------------------------------------------------------------------
-// Phase 4 placeholder — will be moved to sync.rs
-// ---------------------------------------------------------------------------
-
-/// A single entry in the rolling sync event log shown on the dashboard.
-/// TODO (Phase 4): move this struct into sync.rs and re-export from here.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct SyncEvent {
-    pub message: String,
-    pub timestamp: i64,
 }
 
 // ---------------------------------------------------------------------------
@@ -49,14 +38,8 @@ pub struct AppState {
     /// Device IDs currently connected via WebSocket (Phase 2)
     pub connected_devices: Vec<String>,
 
-    /// Rolling log of recent sync events for the dashboard (Phase 4)
-    pub sync_log: Vec<SyncEvent>,
-
     /// Global log manager for real-time telemetry and toggles
-    pub logging: LogManager,
-
-    /// Rolling buffer for all system logs (limited by config.log_max_entries)
-    pub log_buffer: Vec<LogEvent>,
+    pub logging: Arc<LogManager>,
 
     /// User-tunable settings — loaded at startup, mutated via save_config command
     pub config: Config,
@@ -69,14 +52,13 @@ impl AppState {
     /// Creates a new AppState from an open Db handle, loaded config, and data directory.
     pub fn new(db: Db, config: Config, app_data_dir: std::path::PathBuf) -> Self {
         let encryption_key = db.key;
+        let logging = Arc::new(LogManager::new(config.log_max_entries));
         Self {
             db,
             encryption_key,
             network_status: NetworkStatus::Unknown,
             connected_devices: Vec::new(),
-            sync_log: Vec::new(),
-            logging: LogManager::new(),
-            log_buffer: Vec::new(),
+            logging,
             config,
             app_data_dir,
         }

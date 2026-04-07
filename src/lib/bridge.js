@@ -20,3 +20,12 @@ export const getSyncLog = () => invoke("get_sync_log");
 export const getSettings = () => invoke("get_settings");
 export const saveSettings = (settings) => invoke("save_settings", { settings });
 export const forceSync = () => invoke("force_sync");
+
+/** @returns {Promise<boolean>} */
+export const isLoggingEnabled = () => invoke("is_logging_enabled");
+
+/** @param {boolean} enabled */
+export const setLoggingEnabled = (enabled) => invoke("set_logging_enabled", { enabled });
+
+/** @returns {Promise<{ timestamp: number, level: string, subsystem: string, message: string }[]>} */
+export const getLogBuffer = () => invoke("get_log_buffer");

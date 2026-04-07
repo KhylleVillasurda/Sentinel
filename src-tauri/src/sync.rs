@@ -1,39 +1,35 @@
 use std::sync::{Arc, Mutex};
 use tokio::time::{interval, Duration};
 
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
 use crate::db::queries::{fetch_unsynced, mark_synced};
-use crate::logging::{LogLevel, LogSubsystem};
+use crate::logging::{LogLevel, LogSubsystem, LogManager};
 use crate::log_event_emit;
 #[cfg(test)]
 use crate::log_event;
 use crate::state::{AppState, NetworkStatus};
 
 /// Starts the sync engine loop.
-///
-/// Runs forever — spawn with `tokio::spawn` from `main.rs` at startup.
-/// Every `SYNC_INTERVAL_SECS` seconds:
-///   1. Checks if network is `Stable` — skips the cycle if not
-///   2. Fetches all unsynced rows from the DB
-///   3. Attempts a single batched POST to the cloud endpoint
-///   4. On success: marks all rows as synced
-///   5. On failure: skips the failed batch, logs the error, and continues
 pub async fn start_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
-    let sync_interval = {
+    let (sync_interval, logging) = {
         let s = state.lock().unwrap();
-        s.config.sync_interval_secs
+        (s.config.sync_interval_secs, s.logging.clone())
     };
 
     let mut ticker = interval(Duration::from_secs(sync_interval));
 
     loop {
         ticker.tick().await;
-        perform_sync(state.clone(), handle.clone()).await;
+        perform_sync(state.clone(), logging.clone(), handle.clone()).await;
     }
 }
 
-pub async fn perform_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
+pub async fn perform_sync(
+    state: Arc<Mutex<AppState>>,
+    logging: Arc<LogManager>,
+    handle: AppHandle,
+) {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
@@ -53,8 +49,8 @@ pub async fn perform_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
     // 3. Milestone 1: Heartbeat Check (The "Pre-flight")
     if !is_cloud_healthy(&client, &cloud_endpoint).await {
         log_event_emit!(
-            state,
-            handle,
+            logging,
+            &handle,
             LogLevel::Warn,
             LogSubsystem::Sync,
             "Cloud Offline: /health unreachable"
@@ -62,15 +58,15 @@ pub async fn perform_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
         return;
     }
 
-    // 4. Fetch rows (Your existing logic)
+    // 4. Fetch rows
     let rows = {
         let s = state.lock().expect("AppState lock poisoned");
         match fetch_unsynced(&s.db.conn) {
             Ok(r) => r,
             Err(e) => {
                 log_event_emit!(
-                    state,
-                    handle,
+                    logging,
+                    &handle,
                     LogLevel::Error,
                     LogSubsystem::Sync,
                     "Failed to fetch: {e}"
@@ -84,7 +80,7 @@ pub async fn perform_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
         return;
     }
 
-    // 5. Build and POST Batch (Your existing logic)
+    // 5. Build and POST Batch
     let batch: Vec<serde_json::Value> = rows
         .iter()
         .map(|row| {
@@ -114,8 +110,8 @@ pub async fn perform_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
                 }
             }
             log_event_emit!(
-                state,
-                handle,
+                logging,
+                &handle,
                 LogLevel::Info,
                 LogSubsystem::Sync,
                 "Synced {synced_count} row(s) successfully"
@@ -123,8 +119,8 @@ pub async fn perform_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
         }
         Ok(res) => {
             log_event_emit!(
-                state,
-                handle,
+                logging,
+                &handle,
                 LogLevel::Error,
                 LogSubsystem::Sync,
                 "Server rejected batch: HTTP {}",
@@ -133,8 +129,8 @@ pub async fn perform_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
         }
         Err(e) => {
             log_event_emit!(
-                state,
-                handle,
+                logging,
+                &handle,
                 LogLevel::Error,
                 LogSubsystem::Sync,
                 "Upload failed: {e}"
@@ -192,8 +188,6 @@ mod tests {
 
     #[test]
     fn endpoint_read_from_settings() {
-        // Verify the sync engine reads cloud_endpoint from state.settings,
-        // not a hardcoded const — changing settings updates the value immediately.
         let (state, dir) = temp_state();
 
         {
@@ -214,27 +208,29 @@ mod tests {
     #[test]
     fn log_event_appends_to_sync_log() {
         let (state, _dir) = temp_state();
-        log_event!(state, LogLevel::Info, LogSubsystem::Sync, "first event");
-        log_event!(state, LogLevel::Info, LogSubsystem::Sync, "second event");
+        let logging = state.lock().unwrap().logging.clone();
+        log_event!(logging, LogLevel::Info, LogSubsystem::Sync, "first event");
+        log_event!(logging, LogLevel::Info, LogSubsystem::Sync, "second event");
 
         let s = state.lock().unwrap();
-        // Since we insert at 0, index 0 is now "second event"
-        assert_eq!(s.sync_log[0].message, "second event");
-        assert_eq!(s.sync_log[1].message, "first event");
+        let sync_log = s.logging.legacy_sync_log.lock().unwrap();
+        assert_eq!(sync_log[0].message, "second event");
+        assert_eq!(sync_log[1].message, "first event");
     }
 
     #[test]
     fn log_event_caps_at_100_entries() {
         let (state, _dir) = temp_state();
+        let logging = state.lock().unwrap().logging.clone();
 
         for i in 0..120 {
-            log_event!(state, LogLevel::Info, LogSubsystem::Sync, "event {}", i);
+            log_event!(logging, LogLevel::Info, LogSubsystem::Sync, "event {}", i);
         }
 
         let s = state.lock().unwrap();
-        assert_eq!(s.sync_log.len(), 100);
-        // The most recent event (119) should be at the front
-        assert_eq!(s.sync_log[0].message, "event 119");
+        let sync_log = s.logging.legacy_sync_log.lock().unwrap();
+        assert_eq!(sync_log.len(), 100);
+        assert_eq!(sync_log[0].message, "event 119");
     }
 
     #[test]
@@ -244,7 +240,6 @@ mod tests {
 
     #[test]
     fn base64_encode_known_values() {
-        // Standard base64 test vectors (RFC 4648)
         assert_eq!(base64_encode(b"Man"), "TWFu");
         assert_eq!(base64_encode(b"Ma"), "TWE=");
         assert_eq!(base64_encode(b"M"), "TQ==");
@@ -255,13 +250,11 @@ mod tests {
     fn unsynced_rows_remain_after_offline_status() {
         let (state, dir) = temp_state();
 
-        // Insert a row while network is Offline — it should stay unsynced
         {
             let s = state.lock().unwrap();
             insert_payload(&s.db.conn, "device-x", b"blob", 1000).unwrap();
         }
 
-        // Verify it's still unsynced (no sync cycle ran)
         {
             let s = state.lock().unwrap();
             let rows = fetch_unsynced(&s.db.conn).unwrap();

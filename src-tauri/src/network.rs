@@ -27,10 +27,13 @@ const OFFLINE_THRESHOLD: u32 = 3;
 /// holding it), the monitor logs the event and exits cleanly rather than
 /// propagating a panic across thread boundaries.
 pub async fn start_monitor(state: Arc<Mutex<AppState>>) {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(4)) // < PING_INTERVAL to avoid overlap
-        .build()
-        .expect("Failed to build reqwest client for network monitor");
+    let client = {
+        let _s = state.lock().unwrap();
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(4)) // < PING_INTERVAL to avoid overlap
+            .build()
+            .expect("Failed to build reqwest client for network monitor")
+    };
 
     let mut ticker = interval(Duration::from_secs(PING_INTERVAL_SECS));
     let mut consecutive_failures: u32 = 0;
@@ -54,7 +57,7 @@ pub async fn start_monitor(state: Arc<Mutex<AppState>>) {
             Ok(mut s) => {
                 if s.network_status != new_status {
                     log_event!(
-                        state,
+                        s.logging,
                         LogLevel::Info,
                         LogSubsystem::Network,
                         "Status changed: {:?} → {:?} (failures: {})",

@@ -7,7 +7,7 @@ import { SettingsModal } from "./components/SettingsModal";
 import { StatusBadge } from "./components/StatusBadge";
 import { StorageBar } from "./components/StorageBar";
 import { DeviceList } from "./components/DeviceList";
-import { SyncLog } from "./components/SyncLog";
+import { LogViewer } from "./components/LogViewer";
 
 const card = {
   background: "var(--color-background-primary)",
@@ -109,10 +109,10 @@ export default function App() {
         </div>
       </div>
 
-      {/* Sync log — full width */}
+      {/* Edge Diagnostics (Log Viewer) — full width */}
       <div style={card}>
-        <p style={label}>Sync log</p>
-        <SyncLog />
+        <p style={label}>Edge Diagnostics</p>
+        <LogViewer />
       </div>
       <SettingsModal
         isOpen={isSettingsOpen}

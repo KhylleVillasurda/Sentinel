@@ -6,68 +6,49 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use crate::crypto::encrypt_payload;
 use crate::db::queries::insert_payload;
-use crate::logging::{LogLevel, LogSubsystem};
+use crate::logging::{LogLevel, LogSubsystem, LogManager};
 use crate::log_event;
 use crate::state::AppState;
 
 /// Starts the WebSocket server and listens for incoming IoT device connections.
-///
-/// Each accepted connection is handed off to its own `tokio::spawn` task so
-/// the server loop never blocks — a slow or disconnected device cannot stall
-/// other devices.
-///
-/// Bind address is read from `state.settings.ws_bind_address` at startup.
-/// To change it, update settings and restart the app (rebinding a live TCP
-/// listener requires stopping the task — runtime rebind is not supported).
-///
-/// This function runs forever and should be spawned with `tokio::spawn` from
-/// `main.rs` during app startup.
 pub async fn start_server(state: Arc<Mutex<AppState>>) {
-    // Read bind address from settings — short lock, clone, release immediately.
-    let addr = {
+    // Read bind address and logging from settings
+    let (addr, logging) = {
         let s = state.lock().expect("Lock poisoned");
-        // Use the new config field name 'ws_port' instead of 'ws_bind_address'
-        format!("0.0.0.0:{}", s.config.ws_port)
+        (format!("0.0.0.0:{}", s.config.ws_port), s.logging.clone())
     };
 
     let listener = TcpListener::bind(&addr)
         .await
         .unwrap_or_else(|_| panic!("Failed to bind to {}", addr));
 
-    log_event!(state, LogLevel::Info, LogSubsystem::WS, "Sentinel ingestion server listening on ws://{}", addr);
+    log_event!(logging, LogLevel::Info, LogSubsystem::WS, "Sentinel ingestion server listening on ws://{}", addr);
 
     loop {
         match listener.accept().await {
             Ok((stream, peer_addr)) => {
                 let state = Arc::clone(&state);
-                tokio::spawn(handle_connection(stream, state, peer_addr.to_string()));
+                let logging = logging.clone();
+                tokio::spawn(handle_connection(stream, state, logging, peer_addr.to_string()));
             }
             Err(e) => {
-                // Log and continue — a single failed accept should never kill
-                // the server loop
-                log_event!(state, LogLevel::Error, LogSubsystem::WS, "Accept error: {}", e);
+                log_event!(logging, LogLevel::Error, LogSubsystem::WS, "Accept error: {}", e);
             }
         }
     }
 }
 
 /// Handles a single WebSocket connection for its full lifetime.
-///
-/// Lifecycle:
-///   - On successful handshake: `peer_addr` is pushed to `connected_devices`
-///   - On any exit (close, error, stream end): `peer_addr` is removed so the
-///     dashboard always reflects live state. Early returns before registration
-///     (handshake failure) skip the cleanup entirely.
-///
-/// For every incoming binary or text message:
-///   1. Encrypts the raw bytes with AES-256-GCM via `crypto::encrypt_payload`
-///   2. Inserts the encrypted blob into the DB via `db::queries::insert_payload`
-///   3. Sends back a lightweight `ACK` so the device knows the payload landed
-async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_addr: String) {
+async fn handle_connection(
+    stream: TcpStream,
+    state: Arc<Mutex<AppState>>,
+    logging: Arc<LogManager>,
+    peer_addr: String,
+) {
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(e) => {
-            log_event!(state, LogLevel::Error, LogSubsystem::WS, "Handshake failed for {}: {}", peer_addr, e);
+            log_event!(logging, LogLevel::Error, LogSubsystem::WS, "Handshake failed for {}: {}", peer_addr, e);
             return; // Never registered — no cleanup needed
         }
     };
@@ -78,7 +59,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
             .lock()
             .expect("AppState lock poisoned on device connect");
         s.connected_devices.push(peer_addr.clone());
-        log_event!(state, LogLevel::Info, LogSubsystem::WS, "Device connected: {} ({} total)", peer_addr, s.connected_devices.len());
+        log_event!(s.logging, LogLevel::Info, LogSubsystem::WS, "Device connected: {} ({} total)", peer_addr, s.connected_devices.len());
     }
 
     let (mut sender, mut receiver) = ws_stream.split();
@@ -87,7 +68,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
         match msg_result {
             Ok(Message::Binary(payload)) => {
                 if let Err(e) = process_payload(&state, &peer_addr, &payload) {
-                    log_event!(state, LogLevel::Error, LogSubsystem::WS, "Failed to process payload from {}: {}", peer_addr, e);
+                    log_event!(logging, LogLevel::Error, LogSubsystem::WS, "Failed to process payload from {}: {}", peer_addr, e);
                 } else {
                     // ACK: single byte 0x01 so devices can confirm delivery
                     let _ = sender.send(Message::Binary(vec![0x01])).await;
@@ -98,14 +79,14 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
                 // Accept text frames too — treat UTF-8 bytes as raw payload
                 let payload = text.into_bytes();
                 if let Err(e) = process_payload(&state, &peer_addr, &payload) {
-                    log_event!(state, LogLevel::Error, LogSubsystem::WS, "Failed to process text payload from {}: {}", peer_addr, e);
+                    log_event!(logging, LogLevel::Error, LogSubsystem::WS, "Failed to process text payload from {}: {}", peer_addr, e);
                 } else {
                     let _ = sender.send(Message::Binary(vec![0x01])).await;
                 }
             }
 
             Ok(Message::Close(_)) => {
-                log_event!(state, LogLevel::Info, LogSubsystem::WS, "Device closed connection: {}", peer_addr);
+                log_event!(logging, LogLevel::Info, LogSubsystem::WS, "Device closed connection: {}", peer_addr);
                 break;
             }
 
@@ -117,7 +98,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
             Ok(_) => {} // Pong / Frame variants — ignore
 
             Err(e) => {
-                log_event!(state, LogLevel::Error, LogSubsystem::WS, "Connection error from {}: {}", peer_addr, e);
+                log_event!(logging, LogLevel::Error, LogSubsystem::WS, "Connection error from {}: {}", peer_addr, e);
                 break;
             }
         }
@@ -129,14 +110,11 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
             .lock()
             .expect("AppState lock poisoned on device disconnect");
         s.connected_devices.retain(|d| d != &peer_addr);
-        log_event!(state, LogLevel::Info, LogSubsystem::WS, "Device removed: {} ({} remaining)", peer_addr, s.connected_devices.len());
+        log_event!(s.logging, LogLevel::Info, LogSubsystem::WS, "Device removed: {} ({} remaining)", peer_addr, s.connected_devices.len());
     }
 }
 
 /// Encrypts a raw payload and inserts it into the database.
-///
-/// Extracted from `handle_connection` so it can be called for both
-/// binary and text frames without duplication.
 fn process_payload(
     state: &Arc<Mutex<AppState>>,
     device_id: &str,
@@ -182,8 +160,6 @@ mod tests {
 
     #[test]
     fn connected_devices_push_and_retain() {
-        // Simulates what handle_connection does on connect and disconnect.
-        // Tests the state management pattern directly without a real socket.
         let (db, dir) = temp_db();
         let state = Arc::new(Mutex::new(AppState::new(
             db,
@@ -194,7 +170,6 @@ mod tests {
         let peer_a = "192.168.1.10:54321".to_string();
         let peer_b = "192.168.1.11:54322".to_string();
 
-        // Simulate two devices connecting
         {
             let mut s = state.lock().unwrap();
             s.connected_devices.push(peer_a.clone());
@@ -208,7 +183,6 @@ mod tests {
             assert!(s.connected_devices.contains(&peer_b));
         }
 
-        // Simulate peer_a disconnecting
         {
             let mut s = state.lock().unwrap();
             s.connected_devices.retain(|d| d != &peer_a);
@@ -242,7 +216,6 @@ mod tests {
             "10.0.0.3:1003".to_string(),
         ];
 
-        // All connect
         {
             let mut s = state.lock().unwrap();
             for p in &peers {
@@ -250,7 +223,6 @@ mod tests {
             }
         }
 
-        // All disconnect one by one
         for peer in &peers {
             let mut s = state.lock().unwrap();
             s.connected_devices.retain(|d| d != peer);
@@ -278,7 +250,6 @@ mod tests {
         let raw = b"temperature:42.5,humidity:60";
         process_payload(&state, "sensor-01", raw).expect("process_payload must succeed");
 
-        // Fetch from DB and verify the blob decrypts back to the original
         let s = state.lock().unwrap();
         let rows = fetch_unsynced(&s.db.conn).expect("fetch must succeed");
 
