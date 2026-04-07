@@ -28,7 +28,16 @@ pub struct StorageStatsDto {
     pub size_kb: u64,
 }
 
-/// Returned by `get_sync_log`.
+/// Returned by `get_sync_log` and `get_log_buffer`.
+#[derive(serde::Serialize)]
+pub struct LogEventDto {
+    pub timestamp: i64,
+    pub level: String,
+    pub subsystem: String,
+    pub message: String,
+}
+
+/// Legacy DTO for `get_sync_log` compatibility.
 #[derive(serde::Serialize)]
 pub struct SyncEventDto {
     pub message: String,
@@ -49,6 +58,35 @@ pub struct ConfigDto {
 // ---------------------------------------------------------------------------
 // Tauri commands
 // ---------------------------------------------------------------------------
+
+/// Returns whether logging is currently enabled.
+#[tauri::command]
+pub fn is_logging_enabled(state: State<Arc<Mutex<AppState>>>) -> bool {
+    let s = state.lock().expect("AppState lock poisoned");
+    s.logging.is_enabled()
+}
+
+/// Toggles system-wide logging.
+#[tauri::command]
+pub fn set_logging_enabled(state: State<Arc<Mutex<AppState>>>, enabled: bool) {
+    let s = state.lock().expect("AppState lock poisoned");
+    s.logging.set_enabled(enabled);
+}
+
+/// Returns the full rolling log buffer.
+#[tauri::command]
+pub fn get_log_buffer(state: State<Arc<Mutex<AppState>>>) -> Vec<LogEventDto> {
+    let s = state.lock().expect("AppState lock poisoned");
+    s.log_buffer
+        .iter()
+        .map(|e| LogEventDto {
+            timestamp: e.timestamp,
+            level: format!("{:?}", e.level).to_lowercase(),
+            subsystem: format!("{:?}", e.subsystem),
+            message: e.message.clone(),
+        })
+        .collect()
+}
 // Rules (from handoff working rules):
 //   - Commands stay thin: read state, return DTO, nothing else
 //   - No logic lives here — all logic lives in its respective module

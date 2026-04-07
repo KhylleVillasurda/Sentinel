@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::db::Db;
+use crate::logging::{LogManager, LogEvent};
 
 // ---------------------------------------------------------------------------
 // Phase 3 placeholder — will be moved to network.rs
@@ -51,6 +52,12 @@ pub struct AppState {
     /// Rolling log of recent sync events for the dashboard (Phase 4)
     pub sync_log: Vec<SyncEvent>,
 
+    /// Global log manager for real-time telemetry and toggles
+    pub logging: LogManager,
+
+    /// Rolling buffer for all system logs (limited by config.log_max_entries)
+    pub log_buffer: Vec<LogEvent>,
+
     /// User-tunable settings — loaded at startup, mutated via save_config command
     pub config: Config,
 
@@ -68,6 +75,8 @@ impl AppState {
             network_status: NetworkStatus::Unknown,
             connected_devices: Vec::new(),
             sync_log: Vec::new(),
+            logging: LogManager::new(),
+            log_buffer: Vec::new(),
             config,
             app_data_dir,
         }

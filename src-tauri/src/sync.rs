@@ -1,11 +1,14 @@
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::{interval, Duration};
 
 use tauri::{AppHandle, Emitter};
 
 use crate::db::queries::{fetch_unsynced, mark_synced};
-use crate::state::{AppState, NetworkStatus, SyncEvent};
+use crate::logging::{LogLevel, LogSubsystem};
+use crate::log_event_emit;
+#[cfg(test)]
+use crate::log_event;
+use crate::state::{AppState, NetworkStatus};
 
 /// Starts the sync engine loop.
 ///
@@ -49,10 +52,12 @@ pub async fn perform_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
 
     // 3. Milestone 1: Heartbeat Check (The "Pre-flight")
     if !is_cloud_healthy(&client, &cloud_endpoint).await {
-        log_event(
-            &state,
-            Some(&handle),
-            "Cloud Offline: /health unreachable".to_string(),
+        log_event_emit!(
+            state,
+            handle,
+            LogLevel::Warn,
+            LogSubsystem::Sync,
+            "Cloud Offline: /health unreachable"
         );
         return;
     }
@@ -63,7 +68,13 @@ pub async fn perform_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
         match fetch_unsynced(&s.db.conn) {
             Ok(r) => r,
             Err(e) => {
-                log_event(&state, Some(&handle), format!("Failed to fetch: {e}"));
+                log_event_emit!(
+                    state,
+                    handle,
+                    LogLevel::Error,
+                    LogSubsystem::Sync,
+                    "Failed to fetch: {e}"
+                );
                 return;
             }
         }
@@ -102,21 +113,32 @@ pub async fn perform_sync(state: Arc<Mutex<AppState>>, handle: AppHandle) {
                     }
                 }
             }
-            log_event(
-                &state,
-                Some(&handle),
-                format!("Synced {synced_count} row(s) successfully"),
+            log_event_emit!(
+                state,
+                handle,
+                LogLevel::Info,
+                LogSubsystem::Sync,
+                "Synced {synced_count} row(s) successfully"
             );
         }
         Ok(res) => {
-            log_event(
-                &state,
-                Some(&handle),
-                format!("Server rejected batch: HTTP {}", res.status()),
+            log_event_emit!(
+                state,
+                handle,
+                LogLevel::Error,
+                LogSubsystem::Sync,
+                "Server rejected batch: HTTP {}",
+                res.status()
             );
         }
         Err(e) => {
-            log_event(&state, Some(&handle), format!("Upload failed: {e}"));
+            log_event_emit!(
+                state,
+                handle,
+                LogLevel::Error,
+                LogSubsystem::Sync,
+                "Upload failed: {e}"
+            );
         }
     }
 }
@@ -131,55 +153,6 @@ async fn is_cloud_healthy(client: &reqwest::Client, endpoint: &str) -> bool {
         .await
         .map(|res| res.status().is_success())
         .unwrap_or(false)
-}
-
-// Push to React instantly
-pub fn log_and_emit(state: &Arc<Mutex<AppState>>, handle: &AppHandle, message: String) {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-
-    let event = SyncEvent {
-        message: message.clone(),
-        timestamp,
-    };
-
-    if let Ok(mut s) = state.lock() {
-        s.sync_log.insert(0, event.clone());
-        if s.sync_log.len() > 100 {
-            s.sync_log.pop();
-        }
-    }
-
-    let _ = handle.emit("new-sync-event", event);
-}
-
-/// Appends a message to the rolling sync event log in `AppState`.
-///
-/// Caps the log at 100 entries — oldest entries are dropped first.
-/// The dashboard reads this log to display recent sync activity.
-pub fn log_event(state: &Arc<Mutex<AppState>>, handle: Option<&AppHandle>, message: String) {
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64;
-
-    let event = SyncEvent {
-        message: message.clone(),
-        timestamp,
-    };
-
-    if let Ok(mut s) = state.lock() {
-        s.sync_log.insert(0, event.clone());
-        if s.sync_log.len() > 100 {
-            s.sync_log.pop();
-        }
-    }
-
-    if let Some(h) = handle {
-        let _ = h.emit("new-sync-event", event);
-    }
 }
 
 fn base64_encode(data: &[u8]) -> String {
@@ -241,8 +214,8 @@ mod tests {
     #[test]
     fn log_event_appends_to_sync_log() {
         let (state, _dir) = temp_state();
-        log_event(&state, None, "first event".to_string());
-        log_event(&state, None, "second event".to_string());
+        log_event!(state, LogLevel::Info, LogSubsystem::Sync, "first event");
+        log_event!(state, LogLevel::Info, LogSubsystem::Sync, "second event");
 
         let s = state.lock().unwrap();
         // Since we insert at 0, index 0 is now "second event"
@@ -255,7 +228,7 @@ mod tests {
         let (state, _dir) = temp_state();
 
         for i in 0..120 {
-            log_event(&state, None, format!("event {i}"));
+            log_event!(state, LogLevel::Info, LogSubsystem::Sync, "event {}", i);
         }
 
         let s = state.lock().unwrap();

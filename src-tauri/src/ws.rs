@@ -6,6 +6,8 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 use crate::crypto::encrypt_payload;
 use crate::db::queries::insert_payload;
+use crate::logging::{LogLevel, LogSubsystem};
+use crate::log_event;
 use crate::state::AppState;
 
 /// Starts the WebSocket server and listens for incoming IoT device connections.
@@ -32,7 +34,7 @@ pub async fn start_server(state: Arc<Mutex<AppState>>) {
         .await
         .unwrap_or_else(|_| panic!("Failed to bind to {}", addr));
 
-    println!("[ws] Sentinel ingestion server listening on ws://{addr}");
+    log_event!(state, LogLevel::Info, LogSubsystem::WS, "Sentinel ingestion server listening on ws://{}", addr);
 
     loop {
         match listener.accept().await {
@@ -43,7 +45,7 @@ pub async fn start_server(state: Arc<Mutex<AppState>>) {
             Err(e) => {
                 // Log and continue — a single failed accept should never kill
                 // the server loop
-                eprintln!("[ws] Accept error: {e}");
+                log_event!(state, LogLevel::Error, LogSubsystem::WS, "Accept error: {}", e);
             }
         }
     }
@@ -65,7 +67,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(e) => {
-            eprintln!("[ws] Handshake failed for {peer_addr}: {e}");
+            log_event!(state, LogLevel::Error, LogSubsystem::WS, "Handshake failed for {}: {}", peer_addr, e);
             return; // Never registered — no cleanup needed
         }
     };
@@ -76,10 +78,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
             .lock()
             .expect("AppState lock poisoned on device connect");
         s.connected_devices.push(peer_addr.clone());
-        println!(
-            "[ws] Device connected: {peer_addr} ({} total)",
-            s.connected_devices.len()
-        );
+        log_event!(state, LogLevel::Info, LogSubsystem::WS, "Device connected: {} ({} total)", peer_addr, s.connected_devices.len());
     }
 
     let (mut sender, mut receiver) = ws_stream.split();
@@ -88,7 +87,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
         match msg_result {
             Ok(Message::Binary(payload)) => {
                 if let Err(e) = process_payload(&state, &peer_addr, &payload) {
-                    eprintln!("[ws] Failed to process payload from {peer_addr}: {e}");
+                    log_event!(state, LogLevel::Error, LogSubsystem::WS, "Failed to process payload from {}: {}", peer_addr, e);
                 } else {
                     // ACK: single byte 0x01 so devices can confirm delivery
                     let _ = sender.send(Message::Binary(vec![0x01])).await;
@@ -99,14 +98,14 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
                 // Accept text frames too — treat UTF-8 bytes as raw payload
                 let payload = text.into_bytes();
                 if let Err(e) = process_payload(&state, &peer_addr, &payload) {
-                    eprintln!("[ws] Failed to process text payload from {peer_addr}: {e}");
+                    log_event!(state, LogLevel::Error, LogSubsystem::WS, "Failed to process text payload from {}: {}", peer_addr, e);
                 } else {
                     let _ = sender.send(Message::Binary(vec![0x01])).await;
                 }
             }
 
             Ok(Message::Close(_)) => {
-                println!("[ws] Device closed connection: {peer_addr}");
+                log_event!(state, LogLevel::Info, LogSubsystem::WS, "Device closed connection: {}", peer_addr);
                 break;
             }
 
@@ -118,7 +117,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
             Ok(_) => {} // Pong / Frame variants — ignore
 
             Err(e) => {
-                eprintln!("[ws] Connection error from {peer_addr}: {e}");
+                log_event!(state, LogLevel::Error, LogSubsystem::WS, "Connection error from {}: {}", peer_addr, e);
                 break;
             }
         }
@@ -130,10 +129,7 @@ async fn handle_connection(stream: TcpStream, state: Arc<Mutex<AppState>>, peer_
             .lock()
             .expect("AppState lock poisoned on device disconnect");
         s.connected_devices.retain(|d| d != &peer_addr);
-        println!(
-            "[ws] Device removed: {peer_addr} ({} remaining)",
-            s.connected_devices.len()
-        );
+        log_event!(state, LogLevel::Info, LogSubsystem::WS, "Device removed: {} ({} remaining)", peer_addr, s.connected_devices.len());
     }
 }
 

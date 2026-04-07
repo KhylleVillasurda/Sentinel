@@ -6,6 +6,8 @@
 use std::sync::{Arc, Mutex};
 use tokio::time::{interval, Duration};
 
+use crate::logging::{LogLevel, LogSubsystem};
+use crate::log_event;
 use crate::state::{AppState, NetworkStatus};
 
 const PING_INTERVAL_SECS: u64 = 5;
@@ -51,9 +53,14 @@ pub async fn start_monitor(state: Arc<Mutex<AppState>>) {
         match state.lock() {
             Ok(mut s) => {
                 if s.network_status != new_status {
-                    println!(
-                        "[network] Status changed: {:?} → {:?} (failures: {})",
-                        s.network_status, new_status, consecutive_failures
+                    log_event!(
+                        state,
+                        LogLevel::Info,
+                        LogSubsystem::Network,
+                        "Status changed: {:?} → {:?} (failures: {})",
+                        s.network_status,
+                        new_status,
+                        consecutive_failures
                     );
                     s.network_status = new_status;
                 }
@@ -61,6 +68,7 @@ pub async fn start_monitor(state: Arc<Mutex<AppState>>) {
             Err(e) => {
                 // Lock poisoned — another thread panicked while holding the lock.
                 // We cannot safely read or write AppState; exit this task.
+                // Note: We can't log using our macro here as it requires the lock too.
                 eprintln!("[network] AppState lock poisoned: {e}; monitor shutting down");
                 return;
             }
