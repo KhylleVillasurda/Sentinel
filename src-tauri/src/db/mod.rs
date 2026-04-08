@@ -51,7 +51,7 @@ impl Db {
         }
 
         // Test if the key worked by running a simple query
-        if let Err(e) = conn.execute("SELECT 1", []) {
+        if let Err(e) = conn.query_row("SELECT 1", [], |_| Ok(())) {
             println!("[db] CRITICAL ERROR: Key accepted by PRAGMA but database check failed. File might be corrupted or encrypted with a different key. Error: {:?}", e);
             return Err(e.into());
         }

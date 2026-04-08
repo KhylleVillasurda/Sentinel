@@ -382,30 +382,35 @@ mod tests {
         {
             let s = state.lock().unwrap();
             let mut sync_log = s.logging.legacy_sync_log.lock().unwrap();
-            sync_log.push(SyncEvent {
+            // LogManager::log uses insert(0, ...) so it's LIFO (newest at index 0)
+            sync_log.insert(0, SyncEvent {
                 message: "oldest".to_string(),
                 timestamp: 1,
             });
-            sync_log.push(SyncEvent {
+            sync_log.insert(0, SyncEvent {
                 message: "middle".to_string(),
                 timestamp: 2,
             });
-            sync_log.push(SyncEvent {
+            sync_log.insert(0, SyncEvent {
                 message: "newest".to_string(),
                 timestamp: 3,
             });
         }
 
         let s = state.lock().unwrap();
-        let sync_log = s.logging.legacy_sync_log.lock().unwrap();
-        let log: Vec<SyncEventDto> = sync_log
-            .iter()
-            .map(|e| SyncEventDto {
-                message: e.message.clone(),
-                timestamp: e.timestamp,
-            })
-            .collect();
+        let log: Vec<SyncEventDto> = {
+            let sync_log = s.logging.legacy_sync_log.lock().unwrap();
+            sync_log
+                .iter()
+                .map(|e| SyncEventDto {
+                    message: e.message.clone(),
+                    timestamp: e.timestamp,
+                })
+                .collect()
+        };
 
+        // newest should be at index 0, oldest at index 2
+        assert_eq!(log[0].message, "newest");
         assert_eq!(log[2].message, "oldest");
 
         drop(s);
