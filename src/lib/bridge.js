@@ -42,4 +42,7 @@ export const getPairingExpiry = () => invoke("get_pairing_expiry");
 export const getRegisteredDevices = () => invoke("get_registered_devices");
 
 /** @param {string} deviceId */
-export const revokeDevice = (deviceId) => invoke("revoke_device", { deviceId: deviceId });
+export const revokeDevice = (deviceId) => invoke("revoke_device", { device_id: deviceId });
+
+/** @param {number} limit @returns {Promise<{ id: number, device_id: string, decrypted_data: string, received_at: number }[]>} */
+export const getDecryptedPayloads = (limit = 50) => invoke("get_decrypted_payloads", { limit });

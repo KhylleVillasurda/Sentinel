@@ -8,6 +8,7 @@ import { StatusBadge } from "./components/StatusBadge";
 import { StorageBar } from "./components/StorageBar";
 import { DeviceList } from "./components/DeviceList";
 import { LogViewer } from "./components/LogViewer";
+import { PayloadViewer } from "./components/PayloadViewer";
 
 const card = {
   background: "var(--color-background-primary)",
@@ -27,6 +28,7 @@ const label = {
 
 export default function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("logs");
 
   return (
     <div
@@ -111,8 +113,33 @@ export default function App() {
 
       {/* Edge Diagnostics (Log Viewer) — full width */}
       <div style={card}>
-        <p style={label}>Edge Diagnostics</p>
-        <LogViewer />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <p style={{ ...label, marginBottom: 0 }}>Edge Diagnostics</p>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button 
+              onClick={() => setActiveTab("logs")}
+              style={{
+                ...tabButtonStyle,
+                color: activeTab === "logs" ? "var(--color-text-primary)" : "var(--color-text-tertiary)",
+                borderBottom: activeTab === "logs" ? "2px solid #1d9e75" : "none",
+              }}
+            >
+              System Logs
+            </button>
+            <button 
+              onClick={() => setActiveTab("payloads")}
+              style={{
+                ...tabButtonStyle,
+                color: activeTab === "payloads" ? "var(--color-text-primary)" : "var(--color-text-tertiary)",
+                borderBottom: activeTab === "payloads" ? "2px solid #1d9e75" : "none",
+              }}
+            >
+              Decrypted Payloads
+            </button>
+          </div>
+        </div>
+        
+        {activeTab === "logs" ? <LogViewer /> : <PayloadViewer />}
       </div>
       <SettingsModal
         isOpen={isSettingsOpen}
@@ -121,3 +148,14 @@ export default function App() {
     </div>
   );
 }
+
+const tabButtonStyle = {
+  background: "none",
+  border: "none",
+  fontSize: 11,
+  fontWeight: 600,
+  textTransform: "uppercase",
+  cursor: "pointer",
+  padding: "4px 8px",
+  transition: "all 0.2s",
+};

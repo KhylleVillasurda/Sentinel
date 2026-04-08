@@ -84,6 +84,7 @@ fn main() {
             commands::get_pairing_expiry,
             commands::get_registered_devices,
             commands::revoke_device,
+            commands::get_decrypted_payloads,
         ])
         .run(tauri::generate_context!())
         .expect("error while running sentinel");

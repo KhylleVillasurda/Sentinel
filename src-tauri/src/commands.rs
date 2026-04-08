@@ -36,6 +36,14 @@ pub struct SyncEventDto {
     pub timestamp: i64,
 }
 
+#[derive(serde::Serialize)]
+pub struct DecryptedPayloadDto {
+    pub id: i64,
+    pub device_id: String,
+    pub decrypted_data: String,
+    pub received_at: i64,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct ConfigDto {
     pub cloud_endpoint: String,
@@ -46,7 +54,33 @@ pub struct ConfigDto {
 }
 
 use std::sync::atomic::Ordering;
-use crate::db::queries::{list_devices, delete_device, DeviceRow};
+use crate::db::queries::{list_devices, delete_device, DeviceRow, fetch_recent_payloads};
+use crate::crypto::{load_or_create_key, decrypt_payload};
+
+#[tauri::command]
+pub fn get_decrypted_payloads(state: State<Arc<Mutex<AppState>>>, limit: usize) -> Result<Vec<DecryptedPayloadDto>, String> {
+    let s = state.lock().expect("AppState lock poisoned");
+    let key = load_or_create_key();
+    
+    let rows = fetch_recent_payloads(&s.db.conn, limit).map_err(|e| e.to_string())?;
+    
+    let mut decrypted = Vec::new();
+    for row in rows {
+        let data = match decrypt_payload(&row.encrypted_blob, &key) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).to_string(),
+            Err(e) => format!("[Decryption Error: {}]", e),
+        };
+        
+        decrypted.push(DecryptedPayloadDto {
+            id: row.id,
+            device_id: row.device_id,
+            decrypted_data: data,
+            received_at: row.received_at,
+        });
+    }
+    
+    Ok(decrypted)
+}
 
 #[tauri::command]
 pub fn toggle_pairing_mode(state: State<Arc<Mutex<AppState>>>, active: bool) -> i64 {

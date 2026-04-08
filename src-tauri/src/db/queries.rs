@@ -61,6 +61,28 @@ pub fn fetch_unsynced(conn: &Connection) -> Result<Vec<PayloadRow>, SentinelErro
     Ok(rows)
 }
 
+pub fn fetch_recent_payloads(conn: &Connection, limit: usize) -> Result<Vec<PayloadRow>, SentinelError> {
+    let mut stmt = conn.prepare(
+        "SELECT id, device_id, encrypted_blob, received_at
+         FROM payloads
+         ORDER BY received_at DESC
+         LIMIT ?1",
+    )?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![limit], |row| {
+            Ok(PayloadRow {
+                id: row.get(0)?,
+                device_id: row.get(1)?,
+                encrypted_blob: row.get(2)?,
+                received_at: row.get(3)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(rows)
+}
+
 pub fn mark_synced(conn: &Connection, id: i64) -> Result<(), SentinelError> {
     let updated = conn.execute(
         "UPDATE payloads SET synced = 1 WHERE id = ?1",
