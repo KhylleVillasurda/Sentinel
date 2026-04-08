@@ -1,12 +1,10 @@
 // components/SyncLog.jsx
 // Displays the last N sync events pushed by the sync engine.
-// Polls every 10 seconds — sync events are infrequent.
 
 import { useState, useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getSyncLog } from "../lib/bridge";
 
-const POLL_INTERVAL_MS = 10000;
 const MAX_VISIBLE = 8;
 
 // Formats a Unix timestamp (seconds) into a readable local time string
@@ -28,11 +26,11 @@ export function SyncLog() {
 
   useEffect(() => {
     // --- Load initial history on mount ---
-    getSyncLog().then(setEvents);
+    getSyncLog().then((log) => setEvents(log.slice(0, MAX_VISIBLE)));
 
     // --- Listen for "Live" updates ---
     const unlisten = listen("new-sync-event", (event) => {
-      setEvents((prev) => [event.payload, ...prev].slice(0, 8));
+      setEvents((prev) => [event.payload, ...prev].slice(0, MAX_VISIBLE));
     });
 
     return () => {
@@ -42,13 +40,7 @@ export function SyncLog() {
 
   if (events.length === 0) {
     return (
-      <p
-        style={{
-          fontSize: 13,
-          color: "var(--color-text-secondary)",
-          margin: 0,
-        }}
-      >
+      <p style={{ fontSize: 13, color: "var(--color-text-secondary)", margin: 0 }}>
         No sync events yet
       </p>
     );
@@ -73,31 +65,36 @@ export function SyncLog() {
             style={{
               display: "flex",
               alignItems: "center",
-              gap: 10,
+              gap: 12,
               fontSize: 12,
-              padding: "4px 0",
-              borderBottom: "0.5px solid var(--color-border-tertiary)",
+              padding: "6px 0",
+              borderBottom: "1px solid var(--color-border-tertiary)",
             }}
           >
-            <span
+            <i
+              className={failed ? "bi bi-exclamation-circle-fill" : "bi bi-cloud-check-fill"}
               style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: failed ? "#E24B4A" : "#1D9E75",
+                color: failed ? "#E24B4A" : "#1D9E75",
+                fontSize: 14,
                 flexShrink: 0,
               }}
             />
             <span
               style={{
                 color: "var(--color-text-secondary)",
-                minWidth: 80,
+                minWidth: 70,
                 flexShrink: 0,
+                fontWeight: 500,
               }}
             >
               {formatTimestamp(ev.timestamp)}
             </span>
-            <span style={{ color: failed ? "#E24B4A" : "inherit" }}>
+            <span
+              style={{
+                color: failed ? "#E24B4A" : "var(--color-text-primary)",
+                fontWeight: failed ? 500 : 400,
+              }}
+            >
               {ev.message}
             </span>
           </li>

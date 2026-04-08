@@ -5,10 +5,10 @@
 import { useNetworkStatus } from "../hooks/useNetworkStatus";
 
 const STYLES = {
-  Stable:   { bg: "#EAF3DE", color: "#27500A", dot: "#639922" },
-  Degraded: { bg: "#FAEEDA", color: "#633806", dot: "#BA7517" },
-  Offline:  { bg: "#FCEBEB", color: "#501313", dot: "#E24B4A" },
-  Unknown:  { bg: "#F1EFE8", color: "#2C2C2A", dot: "#888780" },
+  Stable:   { bg: "#EAF3DE", color: "#27500A", icon: "bi-check-circle-fill" },
+  Degraded: { bg: "#FAEEDA", color: "#633806", icon: "bi-exclamation-triangle-fill" },
+  Offline:  { bg: "#FCEBEB", color: "#501313", icon: "bi-wifi-off" },
+  Unknown:  { bg: "#F1EFE8", color: "#2C2C2A", icon: "bi-question-circle-fill" },
 };
 
 export function StatusBadge() {
@@ -24,20 +24,14 @@ export function StatusBadge() {
         background: s.bg,
         color: s.color,
         fontSize: 12,
-        fontWeight: 500,
-        padding: "3px 10px",
+        fontWeight: 600,
+        padding: "4px 12px",
         borderRadius: 99,
+        textTransform: "uppercase",
+        letterSpacing: "0.02em",
       }}
     >
-      <span
-        style={{
-          width: 7,
-          height: 7,
-          borderRadius: "50%",
-          background: s.dot,
-          flexShrink: 0,
-        }}
-      />
+      <i className={s.icon} style={{ fontSize: 13 }} />
       {status}
     </span>
   );

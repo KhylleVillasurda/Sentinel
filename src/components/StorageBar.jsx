@@ -23,7 +23,16 @@ export function StorageBar() {
           marginBottom: 6,
         }}
       >
-        <span style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>
+        <span
+          style={{
+            fontSize: 13,
+            color: "var(--color-text-secondary)",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+          }}
+        >
+          <i className="bi bi-database" style={{ fontSize: 14 }} />
           Local storage
         </span>
         <span style={{ fontSize: 13, fontWeight: 500 }}>{sizeLabel}</span>
@@ -61,8 +70,34 @@ export function StorageBar() {
         </span>
         {unsyncedRows > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={unsyncedBadgeStyle}>{unsyncedRows} unsynced</span>
-            <button onClick={() => forceSync()} style={syncButtonStyle}>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                padding: "2px 10px",
+                borderRadius: 99,
+                background: "#FAEEDA",
+                color: "#633806",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+              }}
+            >
+              <i className="bi bi-arrow-repeat" style={{ fontSize: 12 }} />
+              {unsyncedRows.toLocaleString()} pending sync
+            </span>
+            <button
+              onClick={() => forceSync()}
+              style={{
+                background: "none",
+                border: "1px solid var(--color-border-tertiary)",
+                color: "var(--color-text-secondary)",
+                borderRadius: 4,
+                padding: "2px 8px",
+                cursor: "pointer",
+                fontSize: 11,
+              }}
+            >
               Sync Now
             </button>
           </div>

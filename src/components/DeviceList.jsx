@@ -39,20 +39,16 @@ export function DeviceList() {
           style={{
             display: "flex",
             alignItems: "center",
-            gap: 8,
+            gap: 10,
             fontSize: 13,
+            padding: "8px 12px",
+            background: "var(--color-background-secondary)",
+            borderRadius: 8,
+            border: "0.5px solid var(--color-border-tertiary)",
           }}
         >
-          <span
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              background: "#1D9E75",
-              flexShrink: 0,
-            }}
-          />
-          <span style={{ fontFamily: "var(--font-mono)" }}>{id}</span>
+          <i className="bi bi-cpu" style={{ color: "#1D9E75", fontSize: 16 }} />
+          <span style={{ fontFamily: "var(--font-mono)", fontWeight: 500 }}>{id}</span>
         </li>
       ))}
     </ul>
