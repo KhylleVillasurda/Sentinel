@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { 
   getRegisteredDevices, 
+  getConnectedDevices,
   revokeDevice, 
   togglePairingMode, 
   isPairingModeActive,
@@ -9,11 +10,13 @@ import {
 
 export function DeviceManager() {
   const [devices, setDevices] = useState([]);
+  const [connectedDeviceIds, setConnectedDeviceIds] = useState([]);
   const [isPairing, setIsPairing] = useState(false);
   const [timeLeft, setTimeLeft] = useState(0);
 
   const refreshDevices = () => {
     getRegisteredDevices().then(setDevices).catch(console.error);
+    getConnectedDevices().then(setConnectedDeviceIds).catch(console.error);
   };
 
   useEffect(() => {
@@ -102,36 +105,52 @@ export function DeviceManager() {
           Registered Devices ({devices.length})
         </h4>
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {devices.map(dev => (
-            <div key={dev.device_id} style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              padding: "10px",
-              border: "1px solid var(--color-border-tertiary)",
-              borderRadius: 8,
-              fontSize: 13
-            }}>
-              <div>
-                <div style={{ fontWeight: 500 }}>{dev.friendly_name}</div>
-                <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>ID: {dev.device_id}</div>
+          {devices.map(dev => {
+            const isOnline = connectedDeviceIds.includes(dev.device_id);
+            return (
+              <div key={dev.device_id} style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "10px",
+                border: "1px solid var(--color-border-tertiary)",
+                borderRadius: 8,
+                fontSize: 13
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div 
+                    title={isOnline ? "Online" : "Offline"}
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: "50%",
+                      backgroundColor: isOnline ? "var(--color-accent-green)" : "#444",
+                      boxShadow: isOnline ? "0 0 4px var(--color-accent-green)" : "none",
+                      flexShrink: 0
+                    }} 
+                  />
+                  <div>
+                    <div style={{ fontWeight: 500 }}>{dev.friendly_name}</div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>ID: {dev.device_id}</div>
+                  </div>
+                </div>
+                <button 
+                  onClick={() => handleRevoke(dev.device_id)}
+                  style={{
+                    padding: "4px 8px",
+                    fontSize: 11,
+                    background: "none",
+                    border: "1px solid var(--color-accent-red)",
+                    color: "var(--color-accent-red)",
+                    borderRadius: 4,
+                    cursor: "pointer"
+                  }}
+                >
+                  Revoke
+                </button>
               </div>
-              <button 
-                onClick={() => handleRevoke(dev.device_id)}
-                style={{
-                  padding: "4px 8px",
-                  fontSize: 11,
-                  background: "none",
-                  border: "1px solid var(--color-accent-red)",
-                  color: "var(--color-accent-red)",
-                  borderRadius: 4,
-                  cursor: "pointer"
-                }}
-              >
-                Revoke
-              </button>
-            </div>
-          ))}
+            );
+          })}
           {devices.length === 0 && (
             <p style={{ fontSize: 13, color: "var(--color-text-secondary)", textAlign: "center", padding: "20px 0" }}>
               No devices registered yet.
