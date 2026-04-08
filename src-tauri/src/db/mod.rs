@@ -33,20 +33,36 @@ impl Db {
     /// In production, pass the Tauri app data dir resolved in `main.rs`.
     pub fn open(path: &Path) -> Result<Self, SentinelError> {
         let db_path = path.join("sentinel.db");
+        println!("[db] Opening database at: {:?}", db_path);
 
         let conn = Connection::open(&db_path)?;
 
         // SQLCipher requires the key before any other operation.
-        // Pass it as a raw hex blob: PRAGMA key = "x'<hex>'";
+        // Pass it as a raw hex blob: PRAGMA key = \"x'<hex>'\";
+        println!("[db] Loading encryption key from system keychain...");
         let key = load_or_create_key();
-        let hex_key = encode_hex(&key);
-        conn.execute_batch(&format!("PRAGMA key = \"x'{hex_key}'\";\n"))?;
+        let hex_key = hex::encode(key);
+        
+        println!("[db] Applying SQLCipher key...");
+        if let Err(e) = conn.execute_batch(&format!("PRAGMA key = \"x'{hex_key}'\";\n")) {
+            println!("[db] CRITICAL ERROR: Database is locked or key is incorrect. Error: {:?}", e);
+            println!("[db] ACTION REQUIRED: If you manually deleted your system keychain or changed passwords, you must delete 'sentinel.db' to reset the gateway.");
+            return Err(e.into());
+        }
+
+        // Test if the key worked by running a simple query
+        if let Err(e) = conn.execute("SELECT 1", []) {
+            println!("[db] CRITICAL ERROR: Key accepted by PRAGMA but database check failed. File might be corrupted or encrypted with a different key. Error: {:?}", e);
+            return Err(e.into());
+        }
 
         // Scrub SQLCipher key pages from memory on connection close.
         conn.execute_batch("PRAGMA cipher_memory_security = ON;\n")?;
 
+        println!("[db] Key applied successfully. Running migrations...");
         run_migrations(&conn)?;
 
+        println!("[db] Database initialization complete.");
         Ok(Self { conn, key })
     }
 }
@@ -57,9 +73,6 @@ impl Db {
 
 /// Runs all schema migrations in order. Every statement is idempotent
 /// (`CREATE TABLE IF NOT EXISTS`, etc.) so this safely re-runs on every startup.
-///
-/// TODO (Phase 4): add a migrations table and version-gate statements if the
-/// schema grows complex enough to warrant it.
 fn run_migrations(conn: &Connection) -> Result<(), SentinelError> {
     conn.execute_batch(
         "
@@ -73,28 +86,19 @@ fn run_migrations(conn: &Connection) -> Result<(), SentinelError> {
             synced          INTEGER NOT NULL DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS devices (
+            device_id       TEXT    PRIMARY KEY,
+            friendly_name   TEXT    NOT NULL,
+            token_hash      TEXT    NOT NULL,
+            created_at      INTEGER NOT NULL,
+            last_seen       INTEGER NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_payloads_synced
             ON payloads (synced, received_at);
         ",
     )?;
     Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Encodes a byte slice as a lowercase hex string.
-/// Avoids pulling in the `hex` crate — keeps dependencies lean.
-fn encode_hex(bytes: &[u8]) -> String {
-    // Pre-allocate exactly 2 chars per byte to avoid reallocation.
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        // write! into a String is infallible — the unwrap is unreachable.
-        use std::fmt::Write as _;
-        let _ = write!(out, "{b:02x}");
-    }
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -152,11 +156,5 @@ mod tests {
             "INSERT into payloads must succeed: {result:?}"
         );
         fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn encode_hex_produces_correct_output() {
-        assert_eq!(encode_hex(&[0x00, 0xFF, 0xAB]), "00ffab");
-        assert_eq!(encode_hex(&[0u8; 4]), "00000000");
     }
 }

@@ -1,9 +1,11 @@
 import { useState, useEffect } from "react";
 import { getSettings, saveSettings } from "../lib/bridge";
+import { DeviceManager } from "./DeviceManager";
 
 const TABS = {
   NETWORK: "Network",
   SYNC: "Sync",
+  DEVICES: "Devices",
   DIAGNOSTICS: "Diagnostics",
 };
 
@@ -28,7 +30,6 @@ export function SettingsModal({ isOpen, onClose }) {
   const handleSave = async () => {
     setSaving(true);
     try {
-      // Validate Port before sending
       if (config.ws_port < 1024 || config.ws_port > 65535) {
         throw new Error("Invalid Port. Use 1024-65535.");
       }
@@ -46,7 +47,7 @@ export function SettingsModal({ isOpen, onClose }) {
   return (
     <div style={modalOverlay}>
       <div style={modalContent}>
-        {/* MODAL HEADER: Title + Tab Bar */}
+        {/* MODAL HEADER */}
         <div style={header}>
           <h2 style={{ fontSize: 16, margin: 0, fontWeight: 500 }}>
             Gateway Configuration
@@ -65,9 +66,8 @@ export function SettingsModal({ isOpen, onClose }) {
           </div>
         </div>
 
-        {/* MODAL BODY: Displays the active tab's form fields */}
+        {/* MODAL BODY */}
         <div style={formBody}>
-          {/* NETWORK TAB */}
           {activeTab === TABS.NETWORK && (
             <>
               <div style={inputGroup}>
@@ -102,7 +102,6 @@ export function SettingsModal({ isOpen, onClose }) {
             </>
           )}
 
-          {/* SYNC TAB */}
           {activeTab === TABS.SYNC && (
             <div style={inputGroup}>
               <label style={label}>Cloud Ingestion Endpoint</label>
@@ -117,7 +116,10 @@ export function SettingsModal({ isOpen, onClose }) {
             </div>
           )}
 
-          {/* DIAGNOSTICS TAB */}
+          {activeTab === TABS.DEVICES && (
+            <DeviceManager />
+          )}
+
           {activeTab === TABS.DIAGNOSTICS && (
             <div
               style={{
@@ -147,13 +149,15 @@ export function SettingsModal({ isOpen, onClose }) {
           )}
         </div>
 
-        {/* MODAL FOOTER: Action Buttons */}
+        {/* MODAL FOOTER */}
         <div style={footer}>
-          <button onClick={handleSave} disabled={saving} style={primaryBtn}>
-            {saving ? "Applying..." : "Save Changes"}
-          </button>
+          {activeTab !== TABS.DEVICES && (
+            <button onClick={handleSave} disabled={saving} style={primaryBtn}>
+              {saving ? "Applying..." : "Save Changes"}
+            </button>
+          )}
           <button onClick={onClose} style={secondaryBtn}>
-            Cancel
+            {activeTab === TABS.DEVICES ? "Close" : "Cancel"}
           </button>
         </div>
       </div>
@@ -178,7 +182,8 @@ const modalContent = {
   background: "var(--color-bg-panel)",
   padding: "28px 32px",
   borderRadius: 12,
-  width: "460px",
+  width: "500px",
+  minHeight: "450px",
   border: "1px solid var(--color-border-tertiary)",
   display: "flex",
   flexDirection: "column",
@@ -186,7 +191,7 @@ const modalContent = {
 const header = { marginBottom: 0 };
 const tabBar = {
   display: "flex",
-  gap: 24,
+  gap: 20,
   marginTop: 16,
   borderBottom: "1px solid var(--color-border-tertiary)",
   paddingBottom: 12,
@@ -206,11 +211,12 @@ const activeTabBtn = {
   fontWeight: 500,
 };
 const formBody = {
-  minHeight: "150px",
+  flex: 1,
   paddingTop: "24px",
   display: "flex",
   flexDirection: "column",
   justifyContent: "flex-start",
+  overflowY: "auto"
 };
 const inputGroup = { marginBottom: 16 };
 const label = {
@@ -240,7 +246,7 @@ const restartNote = {
 const footer = {
   display: "flex",
   gap: 12,
-  marginTop: 32,
+  marginTop: 20,
   justifyContent: "flex-start",
 };
 const primaryBtn = {

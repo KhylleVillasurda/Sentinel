@@ -1,7 +1,6 @@
 // lib/bridge.js
 // Thin wrapper around Tauri's invoke().
 // All React code imports from here — never calls invoke() directly.
-// This means if a command name changes, you fix it in one place.
 
 import { invoke } from "@tauri-apps/api/core";
 
@@ -29,3 +28,18 @@ export const setLoggingEnabled = (enabled) => invoke("set_logging_enabled", { en
 
 /** @returns {Promise<{ timestamp: number, level: string, subsystem: string, message: string }[]>} */
 export const getLogBuffer = () => invoke("get_log_buffer");
+
+/** @param {boolean} active @returns {Promise<number>} - expiry timestamp */
+export const togglePairingMode = (active) => invoke("toggle_pairing_mode", { active });
+
+/** @returns {Promise<boolean>} */
+export const isPairingModeActive = () => invoke("is_pairing_mode_active");
+
+/** @returns {Promise<number>} */
+export const getPairingExpiry = () => invoke("get_pairing_expiry");
+
+/** @returns {Promise<{ device_id: string, friendly_name: string, created_at: number, last_seen: number }[]>} */
+export const getRegisteredDevices = () => invoke("get_registered_devices");
+
+/** @param {string} deviceId */
+export const revokeDevice = (deviceId) => invoke("revoke_device", { deviceId: deviceId });

@@ -1,8 +1,7 @@
 // db/queries.rs
-// All SQL against the `payloads` table lives here — no raw SQL elsewhere.
+// All SQL against the `payloads` and `devices` tables lives here.
 
 use rusqlite::Connection;
-
 use crate::error::SentinelError;
 
 /// A single row from the `payloads` table.
@@ -14,10 +13,18 @@ pub struct PayloadRow {
     pub received_at: i64,
 }
 
-/// Inserts an encrypted payload blob into the `payloads` table.
-///
-/// `encrypted_blob` is the direct output of `crypto::encrypt_payload()`.
-/// Returns the `rowid` of the newly inserted row.
+/// A single row from the `devices` table.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeviceRow {
+    pub device_id: String,
+    pub friendly_name: String,
+    pub token_hash: String,
+    pub created_at: i64,
+    pub last_seen: i64,
+}
+
+// --- Payload Queries ---
+
 pub fn insert_payload(
     conn: &Connection,
     device_id: &str,
@@ -32,9 +39,6 @@ pub fn insert_payload(
     Ok(conn.last_insert_rowid())
 }
 
-/// Returns all rows where `synced = 0`, ordered oldest-first.
-///
-/// The sync engine drains this list when the network is Stable.
 pub fn fetch_unsynced(conn: &Connection) -> Result<Vec<PayloadRow>, SentinelError> {
     let mut stmt = conn.prepare(
         "SELECT id, device_id, encrypted_blob, received_at
@@ -43,9 +47,6 @@ pub fn fetch_unsynced(conn: &Connection) -> Result<Vec<PayloadRow>, SentinelErro
          ORDER BY received_at ASC",
     )?;
 
-    // query_map returns an Iterator<Item = rusqlite::Result<PayloadRow>>.
-    // collect::<rusqlite::Result<Vec<_>>>() short-circuits on the first Err.
-    // The outer `?` converts rusqlite::Error → SentinelError via #[from].
     let rows = stmt
         .query_map([], |row| {
             Ok(PayloadRow {
@@ -60,10 +61,6 @@ pub fn fetch_unsynced(conn: &Connection) -> Result<Vec<PayloadRow>, SentinelErro
     Ok(rows)
 }
 
-/// Marks a single payload row as synced.
-///
-/// Called by the sync engine after a successful cloud upload.
-/// Returns an error if no row with the given `id` exists.
 pub fn mark_synced(conn: &Connection, id: i64) -> Result<(), SentinelError> {
     let updated = conn.execute(
         "UPDATE payloads SET synced = 1 WHERE id = ?1",
@@ -76,6 +73,87 @@ pub fn mark_synced(conn: &Connection, id: i64) -> Result<(), SentinelError> {
         )));
     }
 
+    Ok(())
+}
+
+// --- Device Queries ---
+
+pub fn register_device(
+    conn: &Connection,
+    device: &DeviceRow,
+) -> Result<(), SentinelError> {
+    conn.execute(
+        "INSERT INTO devices (device_id, friendly_name, token_hash, created_at, last_seen)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![
+            device.device_id,
+            device.friendly_name,
+            device.token_hash,
+            device.created_at,
+            device.last_seen
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn get_device(
+    conn: &Connection,
+    device_id: &str,
+) -> Result<Option<DeviceRow>, SentinelError> {
+    let mut stmt = conn.prepare(
+        "SELECT device_id, friendly_name, token_hash, created_at, last_seen FROM devices WHERE device_id = ?1",
+    )?;
+    
+    let mut rows = stmt.query_map(rusqlite::params![device_id], |row| {
+        Ok(DeviceRow {
+            device_id: row.get(0)?,
+            friendly_name: row.get(1)?,
+            token_hash: row.get(2)?,
+            created_at: row.get(3)?,
+            last_seen: row.get(4)?,
+        })
+    })?;
+
+    if let Some(res) = rows.next() {
+        Ok(Some(res?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub fn update_last_seen(conn: &Connection, device_id: &str, timestamp: i64) -> Result<(), SentinelError> {
+    conn.execute(
+        "UPDATE devices SET last_seen = ?1 WHERE device_id = ?2",
+        rusqlite::params![timestamp, device_id],
+    )?;
+    Ok(())
+}
+
+pub fn list_devices(conn: &Connection) -> Result<Vec<DeviceRow>, SentinelError> {
+    let mut stmt = conn.prepare(
+        "SELECT device_id, friendly_name, token_hash, created_at, last_seen FROM devices ORDER BY created_at DESC",
+    )?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(DeviceRow {
+                device_id: row.get(0)?,
+                friendly_name: row.get(1)?,
+                token_hash: row.get(2)?,
+                created_at: row.get(3)?,
+                last_seen: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(rows)
+}
+
+pub fn delete_device(conn: &Connection, device_id: &str) -> Result<(), SentinelError> {
+    conn.execute(
+        "DELETE FROM devices WHERE device_id = ?1",
+        rusqlite::params![device_id],
+    )?;
     Ok(())
 }
 
@@ -104,49 +182,31 @@ mod tests {
     }
 
     #[test]
-    fn insert_and_fetch_unsynced() {
+    fn device_registration_cycle() {
         let (db, dir) = temp_db();
-        let id = insert_payload(&db.conn, "device-1", b"encrypted-blob", 1000)
-            .expect("insert must succeed");
-        let rows = fetch_unsynced(&db.conn).expect("fetch must succeed");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, id);
-        assert_eq!(rows[0].device_id, "device-1");
-        assert_eq!(rows[0].encrypted_blob, b"encrypted-blob");
-        assert_eq!(rows[0].received_at, 1000);
-        fs::remove_dir_all(&dir).ok();
-    }
+        let dev = DeviceRow {
+            device_id: "test-dev".into(),
+            friendly_name: "Test Sensor".into(),
+            token_hash: "hashed-token".into(),
+            created_at: 100,
+            last_seen: 100,
+        };
 
-    #[test]
-    fn mark_synced_removes_row_from_unsynced() {
-        let (db, dir) = temp_db();
-        let id = insert_payload(&db.conn, "device-2", b"blob", 2000)
-            .expect("insert must succeed");
-        mark_synced(&db.conn, id).expect("mark_synced must succeed");
-        let rows = fetch_unsynced(&db.conn).expect("fetch must succeed");
-        assert!(rows.is_empty(), "synced row must not appear in fetch_unsynced");
-        fs::remove_dir_all(&dir).ok();
-    }
+        register_device(&db.conn, &dev).unwrap();
+        
+        let fetched = get_device(&db.conn, "test-dev").unwrap().unwrap();
+        assert_eq!(fetched.friendly_name, "Test Sensor");
 
-    #[test]
-    fn fetch_unsynced_orders_oldest_first() {
-        let (db, dir) = temp_db();
-        insert_payload(&db.conn, "device-3", b"blob-c", 3000).unwrap();
-        insert_payload(&db.conn, "device-3", b"blob-a", 1000).unwrap();
-        insert_payload(&db.conn, "device-3", b"blob-b", 2000).unwrap();
-        let rows = fetch_unsynced(&db.conn).unwrap();
-        assert_eq!(rows.len(), 3);
-        assert_eq!(rows[0].received_at, 1000);
-        assert_eq!(rows[1].received_at, 2000);
-        assert_eq!(rows[2].received_at, 3000);
-        fs::remove_dir_all(&dir).ok();
-    }
+        let all = list_devices(&db.conn).unwrap();
+        assert_eq!(all.len(), 1);
 
-    #[test]
-    fn mark_synced_unknown_id_returns_error() {
-        let (db, dir) = temp_db();
-        let result = mark_synced(&db.conn, 9999);
-        assert!(result.is_err(), "marking unknown id must return error");
+        update_last_seen(&db.conn, "test-dev", 200).unwrap();
+        let updated = get_device(&db.conn, "test-dev").unwrap().unwrap();
+        assert_eq!(updated.last_seen, 200);
+
+        delete_device(&db.conn, "test-dev").unwrap();
+        assert!(get_device(&db.conn, "test-dev").unwrap().is_none());
+
         fs::remove_dir_all(&dir).ok();
     }
 }

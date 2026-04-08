@@ -2,6 +2,7 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::logging::LogManager;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicI64};
 
 // ---------------------------------------------------------------------------
 // Phase 3 placeholder — will be moved to network.rs
@@ -41,6 +42,12 @@ pub struct AppState {
     /// Global log manager for real-time telemetry and toggles
     pub logging: Arc<LogManager>,
 
+    /// Whether the gateway is currently accepting new device registrations
+    pub pairing_mode: AtomicBool,
+
+    /// Unix timestamp when pairing mode will automatically expire (0 if disabled)
+    pub pairing_expiry: AtomicI64,
+
     /// User-tunable settings — loaded at startup, mutated via save_config command
     pub config: Config,
 
@@ -59,6 +66,8 @@ impl AppState {
             network_status: NetworkStatus::Unknown,
             connected_devices: Vec::new(),
             logging,
+            pairing_mode: AtomicBool::new(false),
+            pairing_expiry: AtomicI64::new(0),
             config,
             app_data_dir,
         }

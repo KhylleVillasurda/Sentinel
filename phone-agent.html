@@ -73,11 +73,14 @@
 <body>
     <div class="container">
         <h1>SENTINEL-X Agent</h1>
-        <p>Device: Mobile-Agent-01</p>
+        <p id="device-info">Device: Mobile-Agent-01</p>
         
         <label>Gateway Address</label>
         <input type="text" id="address" placeholder="ws://192.168.1.XX:6767" value="ws://">
         
+        <label>Device Token (Optional)</label>
+        <input type="password" id="token" placeholder="Auto-generated on first connect">
+
         <button id="connectBtn" onclick="toggleConnection()">Connect to Gateway</button>
         
         <div id="log">System ready...</div>
@@ -88,10 +91,18 @@
         let interval = null;
         const logEl = document.getElementById('log');
         const btn = document.getElementById('connectBtn');
+        const tokenInput = document.getElementById('token');
+        const deviceId = "Mobile-Agent-01";
 
-        function log(msg) {
+        // Load token from localStorage on boot
+        const savedToken = localStorage.getItem('sentinel_token');
+        if (savedToken) {
+            tokenInput.value = savedToken;
+        }
+
+        function log(msg, color = "#0f0") {
             const time = new Date().toLocaleTimeString();
-            logEl.innerHTML += `<div>[${time}] ${msg}</div>`;
+            logEl.innerHTML += `<div style="color: ${color}">[${time}] ${msg}</div>`;
             logEl.scrollTop = logEl.scrollHeight;
         }
 
@@ -112,34 +123,83 @@
             btn.disabled = true;
 
             socket.onopen = () => {
-                log("Connected to SENTINEL-X");
-                btn.innerText = "Disconnect";
-                btn.disabled = false;
-                btn.style.background = "#e24b4a";
+                log("Socket opened. Initiating auth...");
+                
+                const token = tokenInput.value.trim();
+                if (!token) {
+                    log("No token found. Attempting registration...", "#aaa");
+                    socket.send(JSON.stringify({
+                        type: "register",
+                        device_id: deviceId,
+                        friendly_name: "Mobile Device"
+                    }));
+                } else {
+                    log("Authenticating with token...", "#aaa");
+                    socket.send(JSON.stringify({
+                        type: "auth",
+                        device_id: deviceId,
+                        token: token
+                    }));
+                }
+            };
 
-                // Start sending mock sensor data every 3 seconds
-                interval = setInterval(() => {
-                    const mockData = {
-                        device_id: "Mobile-Agent-01",
-                        payload: JSON.stringify({
-                            temp: (20 + Math.random() * 10).toFixed(2),
-                            uptime: Math.floor(performance.now() / 1000)
-                        })
-                    };
-                    socket.send(JSON.stringify(mockData));
-                    log(`Sent: ${mockData.payload}`);
-                }, 3000);
+            socket.onmessage = (event) => {
+                try {
+                    // Try to parse as JSON first (Auth responses)
+                    const data = JSON.parse(event.data);
+                    
+                    if (data.type === "registered") {
+                        log("REGISTRATION SUCCESS!", "#1d9e75");
+                        tokenInput.value = data.token;
+                        localStorage.setItem('sentinel_token', data.token);
+                        startDataStream();
+                    } else if (data.type === "authenticated") {
+                        log("AUTHENTICATION SUCCESS!", "#1d9e75");
+                        startDataStream();
+                    } else if (data.type === "error") {
+                        log(`AUTH ERROR: ${data.message}`, "#e24b4a");
+                        stop();
+                    }
+                } catch (e) {
+                    // If not JSON, it's likely an ACK (binary 0x01)
+                    if (event.data instanceof Blob) {
+                        event.data.arrayBuffer().then(buf => {
+                            const view = new Uint8Array(buf);
+                            if (view[0] === 0x01) {
+                                // log("ACK received", "#444");
+                            }
+                        });
+                    }
+                }
             };
 
             socket.onclose = () => {
-                log("Disconnected.");
+                log("Disconnected.", "#e24b4a");
                 stop();
             };
 
             socket.onerror = () => {
-                log("Error: Check IP and Firewall.");
+                log("Error: Check IP and Firewall.", "#e24b4a");
                 stop();
             };
+        }
+
+        function startDataStream() {
+            btn.innerText = "Disconnect";
+            btn.disabled = false;
+            btn.style.background = "#e24b4a";
+
+            log("Streaming mock sensor data...", "#aaa");
+            interval = setInterval(() => {
+                if (socket && socket.readyState === WebSocket.OPEN) {
+                    const payload = JSON.stringify({
+                        temp: (20 + Math.random() * 10).toFixed(2),
+                        uptime: Math.floor(performance.now() / 1000)
+                    });
+                    socket.send(payload);
+                    log(`Sent: ${payload}`);
+                }
+            }, 3000);
         }
 
         function stop() {

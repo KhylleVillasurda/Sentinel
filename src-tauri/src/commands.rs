@@ -45,9 +45,52 @@ pub struct ConfigDto {
     pub log_max_entries: usize,
 }
 
-// ---------------------------------------------------------------------------
-// Tauri commands
-// ---------------------------------------------------------------------------
+use std::sync::atomic::Ordering;
+use crate::db::queries::{list_devices, delete_device, DeviceRow};
+
+#[tauri::command]
+pub fn toggle_pairing_mode(state: State<Arc<Mutex<AppState>>>, active: bool) -> i64 {
+    let s = state.lock().expect("AppState lock poisoned");
+    s.pairing_mode.store(active, Ordering::SeqCst);
+    
+    let expiry = if active {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let exp = now + 60; // 60 seconds window
+        s.pairing_expiry.store(exp, Ordering::SeqCst);
+        exp
+    } else {
+        s.pairing_expiry.store(0, Ordering::SeqCst);
+        0
+    };
+    expiry
+}
+
+#[tauri::command]
+pub fn is_pairing_mode_active(state: State<Arc<Mutex<AppState>>>) -> bool {
+    let s = state.lock().expect("AppState lock poisoned");
+    s.pairing_mode.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+pub fn get_pairing_expiry(state: State<Arc<Mutex<AppState>>>) -> i64 {
+    let s = state.lock().expect("AppState lock poisoned");
+    s.pairing_expiry.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+pub fn get_registered_devices(state: State<Arc<Mutex<AppState>>>) -> Result<Vec<DeviceRow>, String> {
+    let s = state.lock().expect("AppState lock poisoned");
+    list_devices(&s.db.conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn revoke_device(state: State<Arc<Mutex<AppState>>>, device_id: String) -> Result<(), String> {
+    let s = state.lock().expect("AppState lock poisoned");
+    delete_device(&s.db.conn, &device_id).map_err(|e| e.to_string())
+}
 
 #[tauri::command]
 pub fn is_logging_enabled(state: State<Arc<Mutex<AppState>>>) -> bool {

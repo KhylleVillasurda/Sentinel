@@ -1,14 +1,13 @@
 // main.rs
 // SENTINEL entry point.
-// Responsibilities: build the Tauri app, initialise shared state,
-// spawn background tasks (WS server, network monitor, sync engine),
-// and register all Tauri commands.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use sentinel_lib::{commands, network, state::AppState, sync, ws};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
 use tauri::Manager;
+use tokio::time::{interval, Duration};
 
 fn main() {
     tauri::Builder::default()
@@ -22,6 +21,7 @@ fn main() {
                 .expect("Failed to load Sentinel config");
 
             let app_state = Arc::new(Mutex::new(AppState::new(db, cfg, app_data_dir)));
+            
             // --- Spawn background tasks ---
 
             // WebSocket ingestion server
@@ -39,9 +39,30 @@ fn main() {
             // Sync engine
             let sync_state = app_state.clone();
             let sync_handle = app.handle().clone();
-
             tauri::async_runtime::spawn(async move {
                 sync::start_sync(sync_state, sync_handle).await;
+            });
+
+            // Pairing Mode Auto-Expiry Task
+            let pairing_state = app_state.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut ticker = interval(Duration::from_secs(1));
+                loop {
+                    ticker.tick().await;
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs() as i64;
+                    
+                    let s = pairing_state.lock().unwrap();
+                    let expiry = s.pairing_expiry.load(Ordering::SeqCst);
+                    
+                    if expiry > 0 && now >= expiry {
+                        println!("[auth] Pairing mode expired.");
+                        s.pairing_mode.store(false, Ordering::SeqCst);
+                        s.pairing_expiry.store(0, Ordering::SeqCst);
+                    }
+                }
             });
 
             app.manage(app_state);
@@ -58,6 +79,11 @@ fn main() {
             commands::is_logging_enabled,
             commands::set_logging_enabled,
             commands::get_log_buffer,
+            commands::toggle_pairing_mode,
+            commands::is_pairing_mode_active,
+            commands::get_pairing_expiry,
+            commands::get_registered_devices,
+            commands::revoke_device,
         ])
         .run(tauri::generate_context!())
         .expect("error while running sentinel");
