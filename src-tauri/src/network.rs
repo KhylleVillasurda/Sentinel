@@ -6,6 +6,8 @@
 use std::sync::{Arc, Mutex};
 use tokio::time::{interval, Duration};
 
+use crate::logging::{LogLevel, LogSubsystem};
+use crate::log_event;
 use crate::state::{AppState, NetworkStatus};
 
 const PING_INTERVAL_SECS: u64 = 5;
@@ -25,10 +27,13 @@ const OFFLINE_THRESHOLD: u32 = 3;
 /// holding it), the monitor logs the event and exits cleanly rather than
 /// propagating a panic across thread boundaries.
 pub async fn start_monitor(state: Arc<Mutex<AppState>>) {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(4)) // < PING_INTERVAL to avoid overlap
-        .build()
-        .expect("Failed to build reqwest client for network monitor");
+    let client = {
+        let _s = state.lock().unwrap();
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(4)) // < PING_INTERVAL to avoid overlap
+            .build()
+            .expect("Failed to build reqwest client for network monitor")
+    };
 
     let mut ticker = interval(Duration::from_secs(PING_INTERVAL_SECS));
     let mut consecutive_failures: u32 = 0;
@@ -51,9 +56,14 @@ pub async fn start_monitor(state: Arc<Mutex<AppState>>) {
         match state.lock() {
             Ok(mut s) => {
                 if s.network_status != new_status {
-                    println!(
-                        "[network] Status changed: {:?} → {:?} (failures: {})",
-                        s.network_status, new_status, consecutive_failures
+                    log_event!(
+                        s.logging,
+                        LogLevel::Info,
+                        LogSubsystem::Network,
+                        "Status changed: {:?} → {:?} (failures: {})",
+                        s.network_status,
+                        new_status,
+                        consecutive_failures
                     );
                     s.network_status = new_status;
                 }
@@ -61,6 +71,7 @@ pub async fn start_monitor(state: Arc<Mutex<AppState>>) {
             Err(e) => {
                 // Lock poisoned — another thread panicked while holding the lock.
                 // We cannot safely read or write AppState; exit this task.
+                // Note: We can't log using our macro here as it requires the lock too.
                 eprintln!("[network] AppState lock poisoned: {e}; monitor shutting down");
                 return;
             }

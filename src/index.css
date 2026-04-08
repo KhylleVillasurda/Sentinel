@@ -6,10 +6,16 @@
   --color-background-secondary: #252529;
   --color-background-tertiary: #0f0f11;
 
+  /* Aliases for components */
+  --color-bg-panel: var(--color-background-primary);
+  --color-bg-main: var(--color-background-secondary);
+
   /* Text */
   --color-text-primary: #ffffff;
   --color-text-secondary: #a1a1aa;
   --color-text-tertiary: #71717a;
+  
+  --color-text-main: var(--color-text-primary);
 
   /* Borders & Accents */
   --color-border-tertiary: #2d2d32;
